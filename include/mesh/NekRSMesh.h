@@ -24,6 +24,7 @@
 #include "NekBoundaryCoupling.h"
 #include "NekVolumeCoupling.h"
 #include "NekInterface.h"
+#include "NekUtility.h"
 
 /**
  * Representation of a nekRS surface mesh as a native MooseMesh. This is
@@ -57,6 +58,30 @@ public:
   NekRSMesh & operator=(const NekRSMesh & other_mesh) = delete;
   virtual std::unique_ptr<MooseMesh> safeClone() const override;
 
+  /// Save the initial volumetric mesh for volume mirror-based moving mesh problems
+  void saveInitialVolMesh();
+
+  /// Initialize previous displacement values to zero for boundary mirror-based moving mesh problems
+  void initializePreviousDisplacements();
+
+  /**
+   * NekRS mesh polynomial order
+   * @return NekRS polynomial order
+   */
+  int nekPolynomialOrder() const { return _nek_polynomial_order; }
+
+  /**
+   * Number of elements to build for each NekRS volume element
+   * @return number of MOOSE elements per NekRS volume element
+   */
+  int nBuildPerVolumeElem() const { return _n_build_per_volume_elem; }
+
+  /**
+   * Number of elements to build for each NekRS surface element
+   * @return number of MOOSE elements per NekRS surface element
+   */
+  int nBuildPerSurfaceElem() const { return _n_build_per_surface_elem; }
+
   /**
    * Get the initial mesh x coordinates
    * @return initial mesh x coordinates
@@ -74,6 +99,24 @@ public:
    * @return initial mesh z coordinates
    */
   const std::vector<double> & nek_initial_z() const { return _initial_z; }
+
+  /**
+   * Get the previous x displacement
+   * @return previous x displacement values
+   */
+  std::vector<double> & prev_disp_x() { return _prev_disp_x; }
+
+  /**
+   * Get the previous y displacement
+   * @return previous y displacement values
+   */
+  std::vector<double> & prev_disp_y() { return _prev_disp_y; }
+
+  /**
+   * Get the previous z displacement
+   * @return previous z displacement values
+   */
+  std::vector<double> & prev_disp_z() { return _prev_disp_z; }
 
   /**
    * Get the boundary coupling data structure
@@ -109,7 +152,7 @@ public:
   int nekNumQuadraturePoints1D() const;
 
   /**
-   * \brief Get the number of elements in MOOSE's representation of nekRS's mesh
+   * \brief Get the number of NekRS elements we rebuild in the MOOSE mesh
    *
    * This function is used to perform the data transfer routines in NekRSProblem
    * agnostic of whether we have surface or volume coupling.
@@ -252,6 +295,32 @@ public:
    */
   int facesOnBoundary(const int elem_id) const;
 
+  /**
+   * Whether the mesh mirror is an exact representation of the NekRS mesh
+   * @param return whether mesh mirror is exact
+   */
+  bool exactMirror() const { return _exact; }
+
+  /**
+   * Get the corner indices for the GLL points to be used in the mesh mirror
+   * @return mapping of mesh mirror nodes to GLL points
+   */
+  std::vector<std::vector<int>> cornerIndices() const { return _corner_indices; }
+
+  /**
+   * Get the number of MOOSE elements we build for each NekRS element
+   * @return MOOSE elements built for each NekRS element
+   */
+  int nMoosePerNek() const { return _n_moose_per_nek; }
+
+  /**
+   * Copy a new boundary displacement value for a given element's face
+   * @param[in] src the source displacement at element e and face f
+   * @param[in] e the element to which src belongs
+   * @param[in] field the displacement field we are updating
+   */
+  void updateDisplacement (const int e, const double *src, const field::NekWriteEnum field);
+
 protected:
   /// Store the rank-local element and rank ownership for volume coupling
   void storeVolumeCoupling();
@@ -310,6 +379,18 @@ protected:
    **/
   const order::NekOrderEnum _order;
 
+  /**
+   * Whether the NekRS mesh mirror is an exact replica of the NekRS mesh.
+   * If false (the default), then we build one MOOSE element for each NekRS element,
+   * and the order of the MOOSE element is selected with 'order'. If true,
+   * then we instead build one MOOSE element for each "first-order element"
+   * within each NekRS high-order spectral element. In other words, if the NekRS
+   * mesh is polynomial order 7, then we would build 7^2 MOOSE surface elements
+   * for each NekRS surface element, and 7^3 MOOSE volume elements for each NekRS
+   * volume element. The order of these elements will be first order.
+   */
+  const bool & _exact;
+
   /// Number of vertices per surface
   int _n_vertices_per_surface;
 
@@ -331,17 +412,44 @@ protected:
    */
   const Real & _scaling;
 
+  /// Block ID for the fluid portion of the mesh mirror
+  const unsigned int & _fluid_block_id;
+
+  /// Block ID for the solid portion of the mesh mirror
+  const unsigned int & _solid_block_id;
+
   /// Order of the nekRS solution
   int _nek_polynomial_order;
 
-  /// Number of surface elements in MooseMesh
+  /**
+   * Number of NekRS surface elements in MooseMesh. The total number of surface
+   * elements in the mesh mirror is _n_surface_elems * _n_build_per_surface_elem.
+   */
   int _n_surface_elems;
 
-  /// Number of volume elements in MooseMesh
+  /// Number of MOOSE surface elements to build per NekRS surface element
+  int _n_build_per_surface_elem;
+
+  /**
+   * Number of NekRS volume elements in MooseMesh. The total number of volume
+   * elements in the mesh mirror is _n_volume_elems * _n_build_per_volume_elem.
+   */
   int _n_volume_elems;
 
-  /// Number of elements in MooseMesh, which depends on whether building a boundary/volume mesh
+  /// Number of MOOSE volume elements to build per NekRS volume element
+  int _n_build_per_volume_elem;
+
+  /**
+   * Number of NekRS elements we build in the MooseMesh. The total number of
+   * elements in the mesh mirror is _n_elems * _n_moose_per_nek.
+   */
   int _n_elems;
+
+  /**
+   * Number of MOOSE elements corresponding to each NekRS element, which depends on whether
+   * building a boundary/volume mesh
+   */
+  int _n_moose_per_nek;
 
   /// Function returning the processor id which should own each element
   int (NekRSMesh::*_elem_processor_id)(const int elem_id);
@@ -357,6 +465,9 @@ protected:
 
   /// Total number of volume elements in the nekRS problem
   int _nek_n_volume_elems;
+
+  /// Number of volume elements in the flow portion of the NekRS mesh
+  int _nek_n_flow_elems;
 
   /**
    * \brief \f$x\f$ coordinates of the current GLL points (which can move in time), for this rank
@@ -406,6 +517,15 @@ protected:
    */
   std::vector<double> _initial_z;
 
+  ///@{
+  /**
+   * \f$x\f$, \f$y\f$, \f$z\f$ displacements of the boundary mesh mirror
+   * for calculating displacement, in this rank
+   **/
+  std::vector<double> _prev_disp_x;
+  std::vector<double> _prev_disp_y;
+  std::vector<double> _prev_disp_z;
+  ///@}
   /**
    * \brief Mapping of boundary GLL indices to MooseMesh node indices
    *
@@ -450,5 +570,6 @@ protected:
   /// Pointer to NekRS's internal mesh data structure
   mesh_t * _nek_internal_mesh = nullptr;
 
-  /// Initial x,y,z coordinates of the internal NekRS mesh
+  /// Corner indices for GLL points of mesh mirror elements
+  std::vector<std::vector<int>> _corner_indices;
 };

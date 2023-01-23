@@ -109,6 +109,12 @@ public:
   virtual bool hasPointTransformations() const { return _symmetry != nullptr; }
 
   /**
+   * Get all the scores added to the tally
+   * @return scores
+   */
+  virtual const std::vector<std::string> & getTallyScores() const { return _tally_score; }
+
+  /**
    * Apply transformations to point
    * @param[in] point
    * @return transformed point
@@ -132,6 +138,40 @@ public:
 
     return pnt_out;
   }
+
+  /**
+   * Read from an OpenMC cell tally and write into an elemental aux variable
+   * @param[in] var_num variable name to write
+   * @param[in] tally tally values to write
+   * @param[in] score tally score
+   * @param[in] print_table whether to print the diagnostic table showing tally values by bin
+   * @return sum of the tally
+   */
+  Real getCellTally(const unsigned int & var_num, const std::vector<xt::xtensor<double, 1>> & tally,
+    const unsigned int & score, const bool & print_table);
+
+  /**
+   * Read from an OpenMC mesh tally and write into an elemental aux variable
+   * @param[in] var_num variable name to write
+   * @param[in] tally tally values to write
+   * @param[in] score tally score
+   * @param[in] print_table whether to print the diagnostic table showing tally values by bin
+   * @return sum of the tally
+   */
+  Real getMeshTally(const unsigned int & var_num, const std::vector<xt::xtensor<double, 1>> & tally,
+    const unsigned int & score, const bool & print_table);
+
+  /**
+   * Extract the (cell or mesh) tally from OpenMC and then apply to the corresponding MOOSE elements.
+   * We also check that the tally normalization gives a total tally sum of 1.0 (when normalized against
+   * the total tally value).
+   * @param[in] var_num variable name to write
+   * @param[in] tally tally values to write
+   * @param[in] score tally score
+   * @param[in] print_table whether to print the diagnostic table showing tally values by bin
+   */
+  void getTally(const unsigned int & var_num, const std::vector<xt::xtensor<double, 1>> & tally,
+    const unsigned int & score, const bool & print_table);
 
   /**
    * Get the cell instance filter for tallies automatically constructed by Cardinal
@@ -405,8 +445,10 @@ protected:
    * change dramatically with iteration. But because relaxation is itself a numerical approximation,
    * this is still inconsequential at the end of the day as long as your problem has converged
    * the relaxed tally to the raw (unrelaxed) tally.
+   * @param[in] t tally index within local tally
+   * @param[in] score score
    */
-  void relaxAndNormalizeTally(const int & t);
+  void relaxAndNormalizeTally(const int & t, const unsigned int & score);
 
   /**
    * Loop over all the OpenMC cells and count the number of MOOSE elements to which the cell
@@ -475,8 +517,10 @@ protected:
    * an error if 'check_zero_tallies = true'.
    * @param[in] power_fraction fractional power of the bin
    * @param[in] descriptor string to use in formatting the error message content
+   * @param[in] score score to check
    */
-  void checkZeroTally(const Real & power_fraction, const std::string & descriptor) const;
+  void checkZeroTally(const Real & power_fraction, const std::string & descriptor,
+    const unsigned int & score) const;
 
   /**
    * Compute the product of volume with a field across ranks and sum into a global map
@@ -499,60 +543,40 @@ protected:
    */
   void sendDensityToOpenMC();
 
-  /// Extract the tally from OpenMC and then apply as a uniform field to the corresponding MOOSE elements.
-  void getTallyFromOpenMC();
-
-  /**
-   * Get the (unrelaxed) tally standard deviation as a function of space and store into variable
-   * @param[in] var_num variable number to store the standard deviation in
-   */
-  void getUnrelaxedTallyStandardDeviationFromOpenMC(const unsigned int & var_num);
-
-  /**
-   * Get the (unrelaxed) tally from OpenMC as a function of space and store into variable
-   * @param[in] var_num variable number to store the tally in
-   */
-  void getUnrelaxedTallyFromOpenMC(const unsigned int & var_num);
-
   /**
    * Multiplier on the normalized tally results; for fixed source runs,
    * we multiply the tally (which has units of eV/source)
    * by the source strength and the eV to joule conversion, while for k-eigenvalue runs, we
    * multiply the normalized tally (which is unitless and has an integral
    * value of 1.0) by the power.
+   * @param[in] score tally score
    */
-  Real tallyMultiplier() const;
+  Real tallyMultiplier(const unsigned int & score) const;
 
   /**
    * Normalize the local tally by either the global tally, or the sum
    * of the local tally. For fixed source simulations, do nothing because the
    * tally result is not re-normalized to any integral quantity.
    * @param[in] tally_result value of tally result
+   * @param[in] score tally score
    * @return normalized tally
    */
-  Real normalizeLocalTally(const Real & tally_result) const;
-
-  /**
-   * Normalize the local tally by either the global tally, or the sum
-   * of the local tally. For fixed source simulations, do nothing because the
-   * tally result is not re-normalized to any integral quantity.
-   * @param[in] raw_tally value of tally result
-   * @return normalized tally
-   */
-  xt::xtensor<double, 1> normalizeLocalTally(const xt::xtensor<double, 1> & raw_tally) const;
+  template <typename T>
+  T normalizeLocalTally(const T & tally_result, const unsigned int & score) const;
 
   /**
    * Add local tally
    * @param[in] score score type
    * @param[in] filters tally filters
    */
-  void addLocalTally(const std::string & score, std::vector<openmc::Filter *> & filters);
+  void addLocalTally(const std::vector<std::string> & score, std::vector<openmc::Filter *> & filters);
 
   /**
    * Check the sum of the fluid and solid tallies (if present) against the global
    * tally.
+   * @param[in] score tally score
    */
-  void checkTallySum() const;
+  void checkTallySum(const unsigned int & score) const;
 
   /**
    * Fill the mesh translations to be applied to each unstructured mesh; if no
@@ -566,9 +590,6 @@ protected:
    * @return whether OpenMC reported an error
    */
   bool findCell(const Point & point);
-
-  /// Extract user-specified additional output fields from OpenMC
-  void extractOutputs();
 
   /**
    * Checks that the contained material cells exactly match between a reference obtained
@@ -752,6 +773,9 @@ protected:
    */
   const bool & _check_equal_mapped_tally_volumes;
 
+  /// Absolute tolerance for checking equal tally mapped volumes
+  const Real & _equal_tally_volume_abs_tol;
+
   /// Constant relaxation factor
   const Real & _relaxation_factor;
 
@@ -832,11 +856,11 @@ protected:
   /// Tally estimator to use for the OpenMC tallies created for multiphysics
   openmc::TallyEstimator _tally_estimator;
 
-  /// OpenMC tally score to write into the 'tally_name' auxiliary variable
-  std::string _tally_score;
+  /// OpenMC tally score(s) to write into the 'tally_name' auxiliary variable(s)
+  std::vector<std::string> _tally_score;
 
-  /// Auxiliary variable name for the OpenMC tally
-  std::string _tally_name;
+  /// Auxiliary variable name(s) for the OpenMC tally(s)
+  std::vector<std::string> _tally_name;
 
   /// Blocks in MOOSE mesh that correspond to the fluid phase
   std::unordered_set<SubdomainID> _fluid_blocks;
@@ -925,8 +949,8 @@ protected:
   /// OpenMC unstructured mesh instance for use of mesh tallies
   const openmc::LibMesh * _mesh_template;
 
-  /// Heat source variable
-  unsigned int _tally_var;
+  /// Tally variable(s)
+  std::vector<unsigned int> _tally_var;
 
   /// Temperature variable
   unsigned int _temp_var;
@@ -934,14 +958,14 @@ protected:
   /// Density variable, which must be in units of kg/m3 based on internal conversions
   unsigned int _density_var;
 
-  /// Sum value of the global tally, across all bins
-  Real _global_sum_tally;
+  /// Sum value of the global tally(s), across all bins
+  std::vector<Real> _global_sum_tally;
 
-  /// Sum value of the local tally, across all bins
-  Real _local_sum_tally;
+  /// Sum value of the local tally(s), across all bins
+  std::vector<Real> _local_sum_tally;
 
-  /// Mean value of the local tally, across all bins; only used for fixed source mode
-  Real _local_mean_tally;
+  /// Mean value of the local tally(s), across all bins; only used for fixed source mode
+  std::vector<Real> _local_mean_tally;
 
   /// When using mesh tallies, whether the mesh comes from the MOOSE [Mesh] block or from a file
   const bool _tally_mesh_from_moose;
@@ -980,14 +1004,11 @@ protected:
   /// OpenMC solution fields to output to the mesh mirror
   const MultiMooseEnum * _outputs = nullptr;
 
-  /**
-   * Auxiliary variable names to apply to each quantity in 'output'; if not specified,
-   * the names default to the string-conversion of the enum in 'output'
-   */
+  /// Suffixes to apply to 'tally_name' in order to name the fields in the 'output'
   std::vector<std::string> _output_name;
 
-  /// Numeric identifiers for the external variables
-  std::vector<unsigned int> _external_vars;
+  /// Numeric identifiers for the external variables (for each score)
+  std::vector<std::vector<unsigned int>> _external_vars;
 
   /// Spatial dimension of the Monte Carlo problem
   static constexpr int DIMENSION{3};
@@ -1005,14 +1026,20 @@ protected:
    * Current fixed point iteration tally result; for instance, when using constant
    * relaxation, the tally is updated as:
    * q(n+1) = (1-a) * q(n) + a * PHI(q(n), s)
-   * where q(n+1) is _current_mean_tally, a is the relaxation factor, q(n)
-   * is _previous_mean_tally, and PHI is the most-recently-computed tally result
-   * (available locally in the tally update function).
+   * where q(n+1) is _current_tally, a is the relaxation factor, q(n)
+   * is _previous_tally, and PHI is the most-recently-computed tally result
+   * (the _current_raw_tally).
    */
-  std::vector<xt::xtensor<double, 1>> _current_mean_tally;
+  std::vector<std::vector<xt::xtensor<double, 1>>> _current_tally;
 
   /// Previous fixed point iteration tally result (after relaxation)
-  std::vector<xt::xtensor<double, 1>> _previous_mean_tally;
+  std::vector<std::vector<xt::xtensor<double, 1>>> _previous_tally;
+
+  /// Current "raw" tally output from Monte Carlo solution
+  std::vector<std::vector<xt::xtensor<double, 1>>> _current_raw_tally;
+
+  /// Current "raw" tally standard deviation
+  std::vector<std::vector<xt::xtensor<double, 1>>> _current_raw_tally_std_dev;
 
   /**
    * Variables to "collate" together (presumably from separate MOOSE apps)

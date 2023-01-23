@@ -38,10 +38,6 @@
 #include "SockeyeApp.h"
 #endif
 
-#ifdef ENABLE_THM_COUPLING
-#include "ThermalHydraulicsApp.h"
-#endif
-
 #ifdef ENABLE_SODIUM
 #include "SodiumApp.h"
 #endif
@@ -75,6 +71,7 @@ CardinalApp::validParams()
   params.addCommandLineParam<std::string>("nekrs_device_id", "--nekrs-device-id", "NekRS device ID");
 
   params.set<bool>("use_legacy_material_output") = false;
+  params.set<bool>("error_unused") = false;
   return params;
 }
 
@@ -91,11 +88,6 @@ CardinalApp::CardinalApp(InputParameters parameters) : MooseApp(parameters)
 #ifdef ENABLE_SOCKEYE_COUPLING
   SockeyeApp::registerApps();
   SockeyeApp::registerAll(_factory, _action_factory, _syntax);
-#endif
-
-#ifdef ENABLE_THM_COUPLING
-  ThermalHydraulicsApp::registerApps();
-  ThermalHydraulicsApp::registerAll(_factory, _action_factory, _syntax);
 #endif
 
 #ifdef ENABLE_SODIUM

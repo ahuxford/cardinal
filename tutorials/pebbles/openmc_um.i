@@ -56,6 +56,7 @@
   power = 1500.0
   solid_blocks = '0'
   tally_type = mesh
+  tally_name = heat_source
   mesh_template = sphere_in_m.e
   mesh_translations = '0 0 0.02
                        0 0 0.06
@@ -79,6 +80,6 @@
     variable = heat_source
   []
   [max_tally_rel_err]
-    type = FissionTallyRelativeError
+    type = TallyRelativeError
   []
 []

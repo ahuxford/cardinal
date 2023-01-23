@@ -6,6 +6,12 @@ In this tutorial, you will learn how to:
 - Establish coupling between OpenMC and MOOSE for nested universe OpenMC models
 - Apply homogenized temperature feedback to heterogeneous OpenMC cells
 
+To access this tutorial,
+
+```
+cd cardinal/tutorials/gas_compact
+```
+
 This tutorial also requires you to download a
 mesh file from Box. Please download the files from the
 `gas_compact` folder [here](https://anl.app.box.com/folder/141527707499?s=irryqrx97n5vi4jmct1e3roqgmhzic89)
@@ -285,7 +291,7 @@ effect of non-equal mapped volumes, please see the
 [OpenMCCellAverageProblem](/problems/OpenMCCellAverageProblem.md) documentation.
 
 Because
-the [!ac](CSG) model is formed by creating axial layers in a lattice nested one level
+the OpenMC model is formed by creating axial layers in a lattice nested one level
 below the highest universe level, the solid cell level is set to 1. Because the fuel compacts
 contain [!ac](TRISO) particles, this indicates that *all* cells in a fuel compact "underneath"
 level 1 will be set to the same temperature. Because the fuel compacts are homogenized in the
@@ -320,7 +326,7 @@ in the reverse direction.
   end=Postprocessors
 
 We define a number of postprocessors to query the solution. The
-[FissionTallyRelativeError](/postprocessors/FissionTallyRelativeError.md)
+[TallyRelativeError](/postprocessors/TallyRelativeError.md)
 extracts the maximum fission tally relative error for monitoring active cycle convergence.
 The `max_power` and `min_power` [ElementExtremeValue](https://mooseframework.inl.gov/source/postprocessors/ElementExtremeValue.html)
 postprocessors compute the maximum and minimum fission power. And as already

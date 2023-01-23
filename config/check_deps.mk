@@ -3,6 +3,23 @@ define n
 
 endef
 
+# First, we can find which submodules have been pulled in
+MOOSE_CONTENT     := $(shell ls $(MOOSE_DIR) 2> /dev/null)
+NEKRS_CONTENT     := $(shell ls $(NEKRS_DIR) 2> /dev/null)
+OPENMC_CONTENT    := $(shell ls $(OPENMC_DIR) 2> /dev/null)
+DAGMC_CONTENT     := $(shell ls $(DAGMC_DIR) 2> /dev/null)
+MOAB_CONTENT      := $(shell ls $(MOAB_DIR) 2> /dev/null)
+SAM_CONTENT       := $(shell ls $(SAM_DIR) 2> /dev/null)
+SOCKEYE_CONTENT   := $(shell ls $(SOCKEYE_DIR) 2> /dev/null)
+
+ifeq ($(THERMAL_HYDRAULICS), yes)
+  THM_CONTENT     := true
+endif
+
+SODIUM_CONTENT    := $(shell ls $(SODIUM_DIR) 2> /dev/null)
+POTASSIUM_CONTENT := $(shell ls $(POTASSIUM_DIR) 2> /dev/null)
+IAPWS95_CONTENT   := $(shell ls $(IAPWS95_DIR) 2> /dev/null)
+
 ifeq ($(MOOSE_CONTENT),)
   $(error $n"MOOSE framework does not seem to be available. Make sure that either the submodule is checked out$nor that MOOSE_DIR points to a location with the MOOSE source.$n$nTo fetch the MOOSE submodule, use ./scripts/get-dependencies.sh")
 endif
@@ -25,7 +42,7 @@ endif
 
 ifeq ($(ENABLE_OPENMC), yes)
   ifeq ($(OPENMC_CONTENT),)
-    $(error $n"OpenMC does not seem to be available, but ENABLE_OPENMC is set to 'yes'. Make sure that the submodule is checked out.$n$nTo fetch the OpenMC submodule, use ./scripts-get-dependencies.sh")
+    $(error $n"OpenMC does not seem to be available, but ENABLE_OPENMC is set to 'yes'. Make sure that the submodule is checked out.$n$nTo fetch the OpenMC submodule, use ./scripts/get-dependencies.sh")
   endif
 
   openmc_status := $(shell git -C $(CONTRIB_DIR) submodule status 2>/dev/null | grep openmc | cut -c1)
@@ -34,12 +51,28 @@ ifeq ($(ENABLE_OPENMC), yes)
   endif
 endif
 
+ifeq ($(ENABLE_DAGMC), yes)
+  ifeq ($(DAGMC_CONTENT),)
+    $(error $n"DagMC does not seem to be available, but ENABLE_DAGMC is set to 'yes'. Make sure that the submodule is checked out.$n$nTo fetch the DagMC submodule, use ./scripts/get-dependencies.sh")
+  endif
+  ifeq ($(MOAB_CONTENT),)
+    $(error $n"Moab does not seem to be available, but ENABLE_DAGMC is set to 'yes'. Make sure that the submodule is checked out.$n$nTo fetch the Moab submodule, use ./scripts/get-dependencies.sh")
+  endif
+
+  DAGMC_status := $(shell git -C $(CONTRIB_DIR) submodule status 2>/dev/null | grep DAGMC | cut -c1)
+  ifneq (,$(findstring +,$(DAGMC_status)))
+    $(warning $n"***WARNING***: Your DagMC submodule is not pointing to the commit tied to Cardinal.$n                To fetch the paired commit, use ./scripts/get-dependencies.sh"$n)
+  endif
+
+  moab_status := $(shell git -C $(CONTRIB_DIR) submodule status 2>/dev/null | grep moab | cut -c1)
+  ifneq (,$(findstring +,$(moab_status)))
+    $(warning $n"***WARNING***: Your Moab submodule is not pointing to the commit tied to Cardinal.$n                To fetch the paired commit, use ./scripts/get-dependencies.sh"$n)
+  endif
+endif
+
 # We can check that if it looks like we're going to build Sockeye, that
 # all of its dependencies are there
 ifneq ($(SOCKEYE_CONTENT),)
-  ifeq ($(THM_CONTENT),)
-    $(error $n"Thermal Hydraulics Module dependency for Sockeye does not seem to be available.$n$nMake sure that 'THERMAL_HYDRAULICS := yes' is set in Cardinal's Makefile.")
-  endif
   ifeq ($(SODIUM_CONTENT),)
     $(error $n"Sodium dependency for Sockeye does not seem to be available. Make sure that either the submodule is checked out$nor that SODIUM_DIR points to a location with the sodium source.$n$nTo fetch the sodium submodule, use 'git submodule update --init contrib/sodium'")
   endif

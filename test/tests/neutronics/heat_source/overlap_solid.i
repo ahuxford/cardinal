@@ -30,27 +30,13 @@
   []
 []
 
-# This AuxVariable and AuxKernel is only here to get the postprocessors
-# to evaluate correctly. This can be deleted after MOOSE issue #17534 is fixed.
-[AuxVariables]
-  [dummy]
-  []
-[]
-
-[AuxKernels]
-  [dummy]
-    type = ConstantAux
-    variable = dummy
-    value = 0.0
-  []
-[]
-
 [Problem]
   type = OpenMCCellAverageProblem
   power = 100.0
   solid_blocks = '100'
   fluid_blocks = '200'
   tally_type = cell
+  tally_name = heat_source
 
   # This input has fissile material in the fluid phase, so we will get a warning
   # that we are neglecting some of the global kappa-fission distribution; so here
@@ -58,8 +44,6 @@
   # will be computed in the solid pebbles
   tally_blocks = '100'
 
-  # This turns off the density and temperature update on the first syncSolutions;
-  # this uses whatever temperature and densities are set in OpenMCs XML files for first step
   initial_properties = xml
 
   # We are skipping some feedback with fissile regions, so we need to turn off the check
@@ -94,5 +78,5 @@
 
 [Outputs]
   exodus = true
-  hide = 'dummy density'
+  hide = 'density'
 []

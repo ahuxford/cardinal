@@ -19,7 +19,6 @@
 #ifdef ENABLE_NEK_COUPLING
 
 #include "NekHeatFluxIntegral.h"
-#include "CardinalEnums.h"
 
 registerMooseObject("CardinalApp", NekHeatFluxIntegral);
 
@@ -44,7 +43,7 @@ NekHeatFluxIntegral::NekHeatFluxIntegral(const InputParameters & parameters)
 Real
 NekHeatFluxIntegral::getValue()
 {
-  return nekrs::heatFluxIntegral(_boundary);
+  return nekrs::heatFluxIntegral(_boundary, _pp_mesh);
 }
 
 #endif

@@ -7,10 +7,8 @@
   type = FileMesh
   file = box.msh
   parallel_type = replicated
-  order = SECOND
   displacements = 'disp_x_o disp_y_o disp_z_o'
   use_displaced_mesh = true
-
 []
 
 [Variables]
@@ -242,7 +240,6 @@
 []
 
 [Outputs]
-  exodus = false
   csv = true
   execute_on = 'final'
   hide = 'source_auxvar synchronize source_integral_m'

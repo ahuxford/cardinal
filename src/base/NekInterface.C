@@ -26,6 +26,7 @@ nekrs::usrwrkIndices indices;
 
 namespace nekrs
 {
+static double setup_time;
 
 // various constants for controlling tolerances
 static double abs_tol;
@@ -44,28 +45,25 @@ setRelativeTol(double tol)
 }
 
 void
+setNekSetupTime(const double & time)
+{
+  setup_time = time;
+}
+
+double
+getNekSetupTime()
+{
+  return setup_time;
+}
+
+void
 setStartTime(const double & start)
 {
   platform->options.setArgs("START TIME", to_string_f(start));
 }
 
-std::vector<int>
-cornerGLLIndices(const int & n)
-{
-  int back_corner = (n + 1) * (n + 1) * n;
-  std::vector<int> corner_indices = {0,
-                                     n,
-                                     (n + 1) * n,
-                                     (n + 1) * (n + 1) - 1,
-                                     back_corner,
-                                     back_corner + n,
-                                     back_corner + (n + 1) * n,
-                                     back_corner + (n + 1) * (n + 1) - 1};
-  return corner_indices;
-}
-
 void
-write_usrwrk_field_file(const int & slot, const std::string & prefix, const dfloat & time, const bool & write_coords)
+write_usrwrk_field_file(const int & slot, const std::string & prefix, const dfloat & time, const int & step, const bool & write_coords)
 {
   int num_bytes = scalarFieldOffset() * sizeof(dfloat);
 
@@ -75,11 +73,11 @@ write_usrwrk_field_file(const int & slot, const std::string & prefix, const dflo
     0 /* where to place data */, num_bytes * slot /* where to source data */);
 
   occa::memory o_null;
-  writeFld(prefix.c_str(), time, write_coords, 1 /* FP64 */, &o_null, &o_null, &o_write, 1);
+  writeFld(prefix.c_str(), time, step, write_coords, 1 /* FP64 */, &o_null, &o_null, &o_write, 1);
 }
 
 void
-write_field_file(const std::string & prefix, const dfloat time)
+write_field_file(const std::string & prefix, const dfloat time, const int & step)
 {
   nrs_t * nrs = (nrs_t *)nrsPtr();
 
@@ -91,7 +89,7 @@ write_field_file(const std::string & prefix, const dfloat time)
     Nscalar = nrs->Nscalar;
   }
 
-  writeFld(prefix.c_str(), time, 1 /* coords */, 1 /* FP64 */, &nrs->o_U, &nrs->o_P, &o_s, Nscalar);
+  writeFld(prefix.c_str(), time, step, 1 /* coords */, 1 /* FP64 */, &nrs->o_U, &nrs->o_P, &o_s, Nscalar);
 }
 
 void
@@ -116,6 +114,24 @@ bool
 hasMovingMesh()
 {
   return platform->options.compareArgs("MOVING MESH", "TRUE");
+}
+
+bool
+hasVariableDt()
+{
+  return platform->options.compareArgs("VARIABLE DT", "TRUE");
+}
+
+bool
+hasElasticitySolver()
+{
+  return platform->options.compareArgs("MESH SOLVER", "ELASTICITY");
+}
+
+bool
+hasUserMeshSolver()
+{
+  return platform->options.compareArgs("MESH SOLVER", "USER");
 }
 
 bool
@@ -205,6 +221,17 @@ temperatureMesh()
 {
   nrs_t * nrs = (nrs_t *)nrsPtr();
   return nrs->cds->mesh[0];
+}
+
+mesh_t *
+getMesh(const MooseEnum & pp_mesh)
+{
+  if (pp_mesh == "fluid")
+    return flowMesh();
+  else if (pp_mesh == "all")
+    return entireMesh();
+  else
+    mooseError("Cardinal cannot operate on this mesh region of ", pp_mesh);
 }
 
 int
@@ -406,13 +433,13 @@ sourceIntegral(const NekVolumeCoupling & nek_volume_coupling)
   return total_integral;
 }
 
-double
-fluxIntegral(const NekBoundaryCoupling & nek_boundary_coupling)
+std::vector<double>
+fluxIntegral(const NekBoundaryCoupling & nek_boundary_coupling, const std::vector<int> & boundary)
 {
   nrs_t * nrs = (nrs_t *)nrsPtr();
   mesh_t * mesh = temperatureMesh();
 
-  double integral = 0.0;
+  std::vector<double> integral(boundary.size(), 0.0);
 
   for (int k = 0; k < nek_boundary_coupling.total_n_faces; ++k)
   {
@@ -420,23 +447,83 @@ fluxIntegral(const NekBoundaryCoupling & nek_boundary_coupling)
     {
       int i = nek_boundary_coupling.element[k];
       int j = nek_boundary_coupling.face[k];
+
+      int face_id = mesh->EToB[i * mesh->Nfaces + j];
+      auto it = std::find(boundary.begin(), boundary.end(), face_id);
+      auto b_index = it - boundary.begin();
+
       int offset = i * mesh->Nfaces * mesh->Nfp + j * mesh->Nfp;
 
       for (int v = 0; v < mesh->Nfp; ++v)
-        integral +=
+        integral[b_index] +=
             nrs->usrwrk[indices.flux + mesh->vmapM[offset + v]] * mesh->sgeo[mesh->Nsgeo * (offset + v) + WSJID];
     }
   }
 
-  // sum across all processes
-  double total_integral;
-  MPI_Allreduce(&integral, &total_integral, 1, MPI_DOUBLE, MPI_SUM, platform->comm.mpiComm);
+  // sum across all processes; this can probably be done more efficiently
+  std::vector<double> total_integral(boundary.size(), 0.0);
+  for (std::size_t i = 0; i < boundary.size(); ++i)
+    MPI_Allreduce(&integral[i], &total_integral[i], 1, MPI_DOUBLE, MPI_SUM, platform->comm.mpiComm);
 
   return total_integral;
 }
 
 bool
+normalizeFluxBySideset(const NekBoundaryCoupling & nek_boundary_coupling,
+                       const std::vector<int> & boundary,
+                       const std::vector<double> & moose_integral,
+                       std::vector<double> & nek_integral,
+                       double & normalized_nek_integral)
+{
+  // scale the nek flux to dimensional form for the sake of normalizing against
+  // a dimensional MOOSE flux
+  for (auto & i : nek_integral)
+    i *= scales.A_ref * scales.flux_ref;
+
+  nrs_t * nrs = (nrs_t *)nrsPtr();
+  mesh_t * mesh = temperatureMesh();
+
+  for (int k = 0; k < nek_boundary_coupling.total_n_faces; ++k)
+  {
+    if (nek_boundary_coupling.process[k] == commRank())
+    {
+      int i = nek_boundary_coupling.element[k];
+      int j = nek_boundary_coupling.face[k];
+
+      int face_id = mesh->EToB[i * mesh->Nfaces + j];
+      auto it = std::find(boundary.begin(), boundary.end(), face_id);
+      auto b_index = it - boundary.begin();
+
+      // avoid divide-by-zero
+      double ratio = 1.0;
+      if (std::abs(nek_integral[b_index]) > abs_tol)
+        ratio = moose_integral[b_index] / nek_integral[b_index];
+
+      int offset = i * mesh->Nfaces * mesh->Nfp + j * mesh->Nfp;
+
+      for (int v = 0; v < mesh->Nfp; ++v)
+      {
+        int id = mesh->vmapM[offset + v];
+        nrs->usrwrk[indices.flux + id] *= ratio;
+      }
+    }
+  }
+
+  // check that the normalization worked properly - confirm against dimensional form
+  auto integrals = fluxIntegral(nek_boundary_coupling, boundary);
+  normalized_nek_integral = std::accumulate(integrals.begin(), integrals.end(), 0.0) * scales.A_ref * scales.flux_ref;
+  double total_moose_integral = std::accumulate(moose_integral.begin(), moose_integral.end(), 0.0);
+  bool low_rel_err = std::abs(total_moose_integral) > abs_tol ?
+                     std::abs(normalized_nek_integral - total_moose_integral) / total_moose_integral < rel_tol : true;
+  bool low_abs_err = std::abs(normalized_nek_integral - total_moose_integral) < abs_tol;
+
+  return low_rel_err && low_abs_err;
+}
+
+
+bool
 normalizeFlux(const NekBoundaryCoupling & nek_boundary_coupling,
+              const std::vector<int> & boundary,
               const double moose_integral,
               double nek_integral,
               double & normalized_nek_integral)
@@ -471,7 +558,8 @@ normalizeFlux(const NekBoundaryCoupling & nek_boundary_coupling,
   }
 
   // check that the normalization worked properly - confirm against dimensional form
-  normalized_nek_integral = fluxIntegral(nek_boundary_coupling) * scales.A_ref * scales.flux_ref;
+  auto integrals = fluxIntegral(nek_boundary_coupling, boundary);
+  normalized_nek_integral = std::accumulate(integrals.begin(), integrals.end(), 0.0) * scales.A_ref * scales.flux_ref;
   bool low_rel_err = std::abs(normalized_nek_integral - moose_integral) / moose_integral < rel_tol;
   bool low_abs_err = std::abs(normalized_nek_integral - moose_integral) < abs_tol;
 
@@ -572,9 +660,10 @@ copyDeformationToDevice()
 }
 
 double
-sideMaxValue(const std::vector<int> & boundary_id, const field::NekFieldEnum & field)
+sideMaxValue(const std::vector<int> & boundary_id, const field::NekFieldEnum & field,
+             const MooseEnum & pp_mesh)
 {
-  mesh_t * mesh = entireMesh();
+  mesh_t * mesh = getMesh(pp_mesh);
 
   double value = -std::numeric_limits<double>::max();
 
@@ -611,9 +700,9 @@ sideMaxValue(const std::vector<int> & boundary_id, const field::NekFieldEnum & f
 }
 
 double
-volumeMaxValue(const field::NekFieldEnum & field)
+volumeMaxValue(const field::NekFieldEnum & field, const MooseEnum & pp_mesh)
 {
-  mesh_t * mesh = entireMesh();
+  mesh_t * mesh = getMesh(pp_mesh);
 
   double value = -std::numeric_limits<double>::max();
 
@@ -644,9 +733,9 @@ volumeMaxValue(const field::NekFieldEnum & field)
 }
 
 double
-volumeMinValue(const field::NekFieldEnum & field)
+volumeMinValue(const field::NekFieldEnum & field, const MooseEnum & pp_mesh)
 {
-  mesh_t * mesh = entireMesh();
+  mesh_t * mesh = getMesh(pp_mesh);
 
   double value = std::numeric_limits<double>::max();
 
@@ -677,9 +766,10 @@ volumeMinValue(const field::NekFieldEnum & field)
 }
 
 double
-sideMinValue(const std::vector<int> & boundary_id, const field::NekFieldEnum & field)
+sideMinValue(const std::vector<int> & boundary_id, const field::NekFieldEnum & field,
+             const MooseEnum & pp_mesh)
 {
-  mesh_t * mesh = entireMesh();
+  mesh_t * mesh = getMesh(pp_mesh);
 
   double value = std::numeric_limits<double>::max();
 
@@ -790,9 +880,9 @@ centroid(int local_elem_id)
 }
 
 double
-volume()
+volume(const MooseEnum & pp_mesh)
 {
-  mesh_t * mesh = entireMesh();
+  mesh_t * mesh = getMesh(pp_mesh);
 
   double integral = 0.0;
 
@@ -860,7 +950,8 @@ dimensionalizeSideIntegral(const field::NekFieldEnum & integrand,
 void
 dimensionalizeSideIntegral(const field::NekFieldEnum & integrand,
                            const std::vector<int> & boundary_id,
-                           double & integral)
+                           double & integral,
+			                     const MooseEnum & pp_mesh)
 {
   // dimensionalize the field if needed
   solution::dimensionalize(integrand, integral);
@@ -870,13 +961,15 @@ dimensionalizeSideIntegral(const field::NekFieldEnum & integrand,
 
   // if temperature, we need to add the reference temperature multiplied by the area integral
   if (integrand == field::temperature)
-    integral += scales.T_ref * area(boundary_id);
+    integral += scales.T_ref * area(boundary_id, pp_mesh);
 }
 
 double
-volumeIntegral(const field::NekFieldEnum & integrand, const Real & volume)
+volumeIntegral(const field::NekFieldEnum & integrand, const Real & volume,
+               const MooseEnum & pp_mesh)
 {
-  mesh_t * mesh = entireMesh();
+  mesh_t * mesh = getMesh(pp_mesh);
+
   double integral = 0.0;
 
   double (*f)(int);
@@ -900,9 +993,9 @@ volumeIntegral(const field::NekFieldEnum & integrand, const Real & volume)
 }
 
 double
-area(const std::vector<int> & boundary_id)
+area(const std::vector<int> & boundary_id, const MooseEnum & pp_mesh)
 {
-  mesh_t * mesh = entireMesh();
+  mesh_t * mesh = getMesh(pp_mesh);
 
   double integral = 0.0;
 
@@ -927,15 +1020,49 @@ area(const std::vector<int> & boundary_id)
   double total_integral;
   MPI_Allreduce(&integral, &total_integral, 1, MPI_DOUBLE, MPI_SUM, platform->comm.mpiComm);
 
-  dimensionalizeSideIntegral(field::unity, boundary_id, total_integral);
+  dimensionalizeSideIntegral(field::unity, boundary_id, total_integral, pp_mesh);
 
   return total_integral;
 }
 
 double
-sideIntegral(const std::vector<int> & boundary_id, const field::NekFieldEnum & integrand)
+usrWrkSideIntegral(const std::vector<int> & boundary_id, const unsigned int & slot,
+                   const MooseEnum & pp_mesh)
 {
-  mesh_t * mesh = entireMesh();
+  mesh_t * mesh = getMesh(pp_mesh);
+  nrs_t * nrs = (nrs_t *) nrsPtr();
+
+  double integral = 0.0;
+
+  for (int i = 0; i < mesh->Nelements; ++i)
+  {
+    for (int j = 0; j < mesh->Nfaces; ++j)
+    {
+      int face_id = mesh->EToB[i * mesh->Nfaces + j];
+
+      if (std::find(boundary_id.begin(), boundary_id.end(), face_id) != boundary_id.end())
+      {
+        int offset = i * mesh->Nfaces * mesh->Nfp + j * mesh->Nfp;
+        for (int v = 0; v < mesh->Nfp; ++v)
+        {
+          integral += nrs->usrwrk[slot * scalarFieldOffset() + mesh->vmapM[offset + v]] *
+                      mesh->sgeo[mesh->Nsgeo * (offset + v) + WSJID];
+        }
+      }
+    }
+  }
+
+  // sum across all processes
+  double total_integral;
+  MPI_Allreduce(&integral, &total_integral, 1, MPI_DOUBLE, MPI_SUM, platform->comm.mpiComm);
+  return total_integral;
+}
+
+double
+sideIntegral(const std::vector<int> & boundary_id, const field::NekFieldEnum & integrand,
+             const MooseEnum & pp_mesh)
+{
+  mesh_t * mesh = getMesh(pp_mesh);
 
   double integral = 0.0;
 
@@ -963,16 +1090,16 @@ sideIntegral(const std::vector<int> & boundary_id, const field::NekFieldEnum & i
   double total_integral;
   MPI_Allreduce(&integral, &total_integral, 1, MPI_DOUBLE, MPI_SUM, platform->comm.mpiComm);
 
-  dimensionalizeSideIntegral(integrand, boundary_id, total_integral);
+  dimensionalizeSideIntegral(integrand, boundary_id, total_integral, pp_mesh);
 
   return total_integral;
 }
 
 double
-massFlowrate(const std::vector<int> & boundary_id)
+massFlowrate(const std::vector<int> & boundary_id, const MooseEnum & pp_mesh)
 {
+  mesh_t * mesh = getMesh(pp_mesh);
   nrs_t * nrs = (nrs_t *)nrsPtr();
-  mesh_t * mesh = entireMesh();
 
   // TODO: This function only works correctly if the density is constant, because
   // otherwise we need to copy the density from device to host
@@ -1018,10 +1145,11 @@ massFlowrate(const std::vector<int> & boundary_id)
 
 double
 sideMassFluxWeightedIntegral(const std::vector<int> & boundary_id,
-                             const field::NekFieldEnum & integrand)
+                             const field::NekFieldEnum & integrand,
+                             const MooseEnum & pp_mesh)
 {
+  mesh_t * mesh = getMesh(pp_mesh);
   nrs_t * nrs = (nrs_t *)nrsPtr();
-  mesh_t * mesh = entireMesh();
 
   // TODO: This function only works correctly if the density is constant, because
   // otherwise we need to copy the density from device to host
@@ -1068,16 +1196,16 @@ sideMassFluxWeightedIntegral(const std::vector<int> & boundary_id,
 
   // if temperature, we need to add the reference temperature multiplied by the mass flux integral
   if (integrand == field::temperature)
-    total_integral += scales.T_ref * massFlowrate(boundary_id);
+    total_integral += scales.T_ref * massFlowrate(boundary_id, pp_mesh);
 
   return total_integral;
 }
 
 double
-heatFluxIntegral(const std::vector<int> & boundary_id)
+heatFluxIntegral(const std::vector<int> & boundary_id, const MooseEnum & pp_mesh)
 {
+  mesh_t * mesh = getMesh(pp_mesh);
   nrs_t * nrs = (nrs_t *)nrsPtr();
-  mesh_t * mesh = temperatureMesh();
 
   // TODO: This function only works correctly if the conductivity is constant, because
   // otherwise we need to copy the conductivity from device to host
@@ -1087,7 +1215,7 @@ heatFluxIntegral(const std::vector<int> & boundary_id)
   double integral = 0.0;
 
   double * grad_T = (double *)calloc(3 * scalarFieldOffset(), sizeof(double));
-  gradient(scalarFieldOffset(), nrs->cds->S, grad_T);
+  gradient(scalarFieldOffset(), nrs->cds->S, grad_T, pp_mesh);
 
   for (int i = 0; i < mesh->Nelements; ++i)
   {
@@ -1127,9 +1255,9 @@ heatFluxIntegral(const std::vector<int> & boundary_id)
 }
 
 void
-gradient(const int offset, const double * f, double * grad_f)
+gradient(const int offset, const double * f, double * grad_f, const MooseEnum & pp_mesh)
 {
-  mesh_t * mesh = entireMesh();
+  mesh_t * mesh = getMesh(pp_mesh);
 
   std::vector<std::vector<std::vector<double>>> s_P(
       mesh->Nq, std::vector<std::vector<double>>(mesh->Nq, std::vector<double>(mesh->Nq, 0)));
@@ -1196,7 +1324,16 @@ namespace mesh
 bool
 isHeatFluxBoundary(const int boundary)
 {
-  return bcMap::text(boundary, "scalar00") == "fixedGradient";
+  // the heat flux boundary is now named 'codedFixedGradient', but 'fixedGradient'
+  // will be present for backwards compatibility
+  return (bcMap::text(boundary, "scalar00") == "fixedGradient") ||
+         (bcMap::text(boundary, "scalar00") == "codedFixedGradient");
+}
+
+bool
+isMovingMeshBoundary(const int boundary)
+{
+  return ( bcMap::text(boundary, "mesh") == "fixedValue" || bcMap::text(boundary, "mesh") == "codedFixedValue");
 }
 
 bool
@@ -1215,6 +1352,14 @@ int
 polynomialOrder()
 {
   return entireMesh()->N;
+}
+
+int NflowElements()
+{
+  int n_local = flowMesh()->Nelements;
+  int n_global;
+  MPI_Allreduce(&n_local, &n_global, 1, MPI_INT, MPI_SUM, platform->comm.mpiComm);
+  return n_global;
 }
 
 int
@@ -1390,6 +1535,27 @@ z_displacement(const int id, const dfloat value)
   mesh->z[id] = value;
 }
 
+void
+mesh_velocity_x(const int id, const dfloat value)
+{
+  nrs_t * nrs = (nrs_t *)nrsPtr();
+  nrs->usrwrk[indices.mesh_velocity_x + id] = value;
+}
+
+void
+mesh_velocity_y(const int id, const dfloat value)
+{
+  nrs_t * nrs = (nrs_t *)nrsPtr();
+  nrs->usrwrk[indices.mesh_velocity_y + id] = value;
+}
+
+void
+mesh_velocity_z(const int id, const dfloat value)
+{
+  nrs_t * nrs = (nrs_t *)nrsPtr();
+  nrs->usrwrk[indices.mesh_velocity_z + id] = value;
+}
+
 double (*solutionPointer(const field::NekFieldEnum & field))(int)
 {
   double (*f)(int);
@@ -1469,6 +1635,15 @@ void (*solutionPointer(const field::NekWriteEnum & field))(int, dfloat)
       break;
     case field::z_displacement:
       f = &solution::z_displacement;
+      break;
+    case field::mesh_velocity_x:
+      f = &solution::mesh_velocity_x;
+      break;
+    case field::mesh_velocity_y:
+      f = &solution::mesh_velocity_y;
+      break;
+    case field::mesh_velocity_z:
+      f = &solution::mesh_velocity_z;
       break;
     default:
       throw std::runtime_error("Unhandled NekWriteEnum!");

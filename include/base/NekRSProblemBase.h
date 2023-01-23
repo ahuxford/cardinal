@@ -42,10 +42,57 @@ public:
   ~NekRSProblemBase();
 
   /**
+   * Map nodal points on a MOOSE face element to the GLL points on a Nek face element.
+   * @param[in] e MOOSE element ID
+   * @param[in] var_num variable index to fetch MOOSE data from
+   * @param[in] multiplier multiplier to apply to the MOOSE data before sending to Nek
+   * @param[out] outgoing_data data represented on Nek's GLL points, ready to be applied in Nek
+   */
+  void mapFaceDataToNekFace(const unsigned int & e, const unsigned int & var_num,
+    const Real & multiplier, double ** outgoing_data);
+
+  /**
+   * Map nodal points on a MOOSE volume element to the GLL points on a Nek volume element.
+   * @param[in] e MOOSE element ID
+   * @param[in] var_num variable index to fetch MOOSE data from
+   * @param[in] multiplier multiplier to apply to the MOOSE data before sending to Nek
+   * @param[out] outgoing_data data represented on Nek's GLL points, ready to be applied in Nek
+   */
+  void mapVolumeDataToNekVolume(const unsigned int & e, const unsigned int & var_num,
+    const Real & multiplier, double ** outgoing_data);
+
+  /**
+   * \brief Map nodal points on a MOOSE face element to the GLL points on a Nek volume element.
+   *
+   * This function is to be used when MOOSE variables are defined over the entire volume
+   * (maybe the MOOSE transfer only sent meaningful values to the coupling boundaries), so we
+   * need to do a volume interpolation of the incoming MOOSE data into nrs->usrwrk, rather
+   * than a face interpolation. This could be optimized in the future to truly only just write
+   * the boundary values into the nekRS scratch space rather than the volume values, but it
+   * looks right now that our biggest expense occurs in the MOOSE transfer system, not these
+   * transfers internally to nekRS.
+   *
+   * @param[in] e MOOSE element ID
+   * @param[in] var_num variable index to fetch MOOSE data from
+   * @param[in] multiplier multiplier to apply to the MOOSE data before sending to Nek
+   * @param[out] outgoing_data data represented on Nek's GLL points, ready to be applied in Nek
+   */
+  void mapFaceDataToNekVolume(const unsigned int & e, const unsigned int & var_num,
+    const Real & multiplier, double ** outgoing_data);
+
+  /**
+   * Check whether the user has already created a variable using one of the protected
+   * names that the NekRS wrapping is using.
+   * @param[in] name variable name
+   */
+  void checkDuplicateVariableName(const std::string & name) const;
+
+  /**
    * Write NekRS solution field file
    * @param[in] time solution time in NekRS (if NekRS is non-dimensional, this will be non-dimensional)
+   * @param[in] step time step index
    */
-  void writeFieldFile(const Real & time) const;
+  void writeFieldFile(const Real & time, const int & step) const;
 
   /**
    * Optional entry point called in externalSolve() where we can adjust
@@ -81,10 +128,10 @@ public:
   virtual bool nondimensional() const { return _nondimensional; }
 
   /**
-   * Whether the mesh is moving
-   * @return whether the mesh is moving
-   */
-  virtual bool movingMesh() const { return false; }
+  * Whether the mesh is moving
+  * @return whether the mesh is moving
+  */
+  virtual const bool hasMovingNekMesh() const { return false; }
 
   /**
    * Whether data should be synchronized in to nekRS
@@ -110,26 +157,29 @@ public:
    */
   void printScratchSpaceInfo(const MultiMooseEnum & indices) const;
 
+  /**
+   * Get the number of usrwrk slots allocated
+   * @return number of allocated usrwrk slots
+   */
+  unsigned int nUsrWrkSlots() const { return _n_usrwrk_slots; }
+
 protected:
   /**
    * Interpolate the MOOSE mesh mirror solution onto the NekRS boundary mesh (mirror -> re2)
-   * @param[in] elem_id element ID
    * @param[in] incoming_moose_value MOOSE face values
    * @param[out] outgoing_nek_value interpolated MOOSE face values onto the NekRS boundary mesh
-   * @param[out] vmapM_offset offset into vmapM to start from for indexing into this element's indices
    */
-  void interpolateBoundarySolutionToNek(const int elem_id, double * incoming_moose_value,
-                                        double * outgoing_nek_value, int & vmapM_offset);
+  void interpolateBoundarySolutionToNek(double * incoming_moose_value,
+                                        double * outgoing_nek_value);
 
   /**
    * Interpolate the MOOSE mesh mirror solution onto the NekRS volume mesh (mirror -> re2)
    * @param[in] elem_id element ID
    * @param[in] incoming_moose_value MOOSE face values
    * @param[out] outgoing_nek_value interpolated MOOSE face values onto the NekRS volume mesh
-   * @param[out] gll_offset offset into usrwrk to start from for indexing into this element's indices
    */
   void interpolateVolumeSolutionToNek(const int elem_id, double * incoming_moose_value,
-                                      double * outgoing_nek_value, int & gll_offset);
+                                      double * outgoing_nek_value);
 
   /**
    * Write into the NekRS solution space for coupling volumes; for setting a mesh position in terms of a
@@ -148,16 +198,12 @@ protected:
 
   /**
    * Write into the NekRS solution space for coupling boundaries; for setting a mesh position in terms of a
-   * displacement, we need to add the displacement to the initial mesh coordinates. For
-   * this, the 'add' parameter lets you pass in a vector of values (in NekRS's mesh order,
-   * i.e. the re2 order) to add.
+   * displacement, we need to add the displacement to the initial mesh coordinates.
    * @param[in] elem_id element ID
    * @param[in] field field to write
    * @param[in] T solution values to write for the field for the given element
-   * @param[in] add optional vector of values to add to each value set on the NekRS en
    */
-  void writeBoundarySolution(const int elem_id, const field::NekWriteEnum & field, double * T,
-    const std::vector<double> * add = nullptr);
+  void writeBoundarySolution(const int elem_id, const field::NekWriteEnum & field, double * T);
 
   /**
    * Interpolate the NekRS volume solution onto the volume MOOSE mesh mirror (re2 -> mirror)
@@ -200,6 +246,8 @@ protected:
    * might already be adding a temperature variable for coupling purposes.
    */
   virtual void addTemperatureVariable();
+
+  std::unique_ptr<NumericVector<Number>> _serialized_solution;
 
   /**
    * Get a three-character prefix for use in writing output files for repeated
@@ -343,9 +391,6 @@ protected:
   /// Number of vertices per volume element of the transfer mesh
   int _n_vertices_per_volume;
 
-  /// Number of elements in the data transfer mesh, which depends on whether boundary/volume coupling
-  int _n_elems;
-
   /// Number of vertices per element in the data transfer mesh, which depends on whether boundary/volume coupling
   int _n_vertices_per_elem;
 
@@ -368,7 +413,7 @@ protected:
    * Underlying mesh object on which NekRS exchanges fields with MOOSE
    * or extracts NekRS's solution for I/O features
    */
-  const NekRSMesh * _nek_mesh;
+  NekRSMesh * _nek_mesh;
 
   /// The time stepper used for selection of time step size
   NekTimeStepper * _timestepper = nullptr;
@@ -420,4 +465,19 @@ protected:
 
   /// Filename prefix to use for naming the field files containing the nrs->o_usrwrk array slots
   const std::vector<std::string> * _usrwrk_output_prefix = nullptr;
+
+  /// Sum of the elapsed time in NekRS solves
+  double _elapsedStepSum;
+
+  /// Sum of the total elapsed time in NekRS solves
+  double _elapsedTime;
+
+  /// Minimum step solve time
+  double _tSolveStepMin;
+
+  /// Maximum step solve time
+  double _tSolveStepMax;
+
+  /// flag to indicate whether this is the first pass to serialize the solution
+  static bool _first;
 };

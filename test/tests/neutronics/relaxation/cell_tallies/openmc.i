@@ -17,20 +17,7 @@
   []
 []
 
-# This AuxVariable and AuxKernel is only here to get the postprocessors
-# to evaluate correctly. This can be deleted after MOOSE issue #17534 is fixed.
-[AuxVariables]
-  [cell_temperature]
-    family = MONOMIAL
-    order = CONSTANT
-  []
-[]
-
 [AuxKernels]
-  [cell_temperature]
-    type = CellTemperatureAux
-    variable = cell_temperature
-  []
   [temp]
     type = FunctionAux
     variable = temp
@@ -54,6 +41,7 @@
   tally_blocks = '0'
   tally_type = cell
   solid_cell_level = 1
+  tally_name = heat_source
   scaling = 100.0
 []
 
@@ -64,7 +52,6 @@
 
 [Outputs]
   exodus = true
-  hide = 'cell_temperature'
 []
 
 [Postprocessors]

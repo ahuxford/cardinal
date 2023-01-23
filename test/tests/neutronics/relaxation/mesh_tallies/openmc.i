@@ -19,20 +19,7 @@
   allow_renumbering = false
 []
 
-# This AuxVariable and AuxKernel is only here to get the postprocessors
-# to evaluate correctly. This can be deleted after MOOSE issue #17534 is fixed.
-[AuxVariables]
-  [cell_temperature]
-    family = MONOMIAL
-    order = CONSTANT
-  []
-[]
-
 [AuxKernels]
-  [cell_temperature]
-    type = CellTemperatureAux
-    variable = cell_temperature
-  []
   [temp]
     type = FunctionAux
     variable = temp
@@ -54,6 +41,7 @@
   power = 1500.0
   solid_blocks = '0'
   tally_type = mesh
+  tally_name = heat_source
   mesh_template = ../../meshes/sphere_in_m.e
   mesh_translations = '0.0 0.0 0.02
                        0.0 0.0 0.06
@@ -71,7 +59,6 @@
 
 [Outputs]
   exodus = true
-  hide = 'cell_temperature'
 []
 
 [Postprocessors]

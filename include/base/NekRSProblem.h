@@ -72,6 +72,9 @@ public:
   /// Send boundary heat flux to nekRS
   void sendBoundaryHeatFluxToNek();
 
+  /// Send boundary deformation to nekRS
+  void sendBoundaryDeformationToNek();
+
   /// Send volume mesh deformation flux to nekRS
   void sendVolumeDeformationToNek();
 
@@ -106,18 +109,42 @@ public:
    */
   virtual double minInterpolatedTemperature() const;
 
-  virtual bool movingMesh() const override { return _moving_mesh; }
+  /**
+  * Whether the mesh is moving
+  * @return whether the mesh is moving
+  */
+  virtual const bool hasMovingNekMesh() const override { return nekrs::hasMovingMesh(); }
 
 protected:
+  /**
+   * Print a warning to the user if the initial fluxes (before normalization) differ
+   * significantly, since this can indicate an error with model setup.
+   * @param[in] nek_flux flux to be received by Nek
+   * @param[in] moose_flux flux sent by MOOSE
+   */
+  void checkInitialFluxValues(const Real & nek_flux, const Real & moose_flux) const;
+
   virtual void addTemperatureVariable() override { return; }
 
-  std::unique_ptr<NumericVector<Number>> _serialized_solution;
-
-  /// Whether the problem is a moving mesh problem i.e. with on-the-fly mesh deformation enabled
-  const bool & _moving_mesh;
+  /**
+   * Calculate mesh velocity for NekRS's elasticity solver using current and previous displacement values
+   * and write it to nrs->usrwrk, from where it can be accessed in nekRS's .oudf file.
+   * @param[in] e Boundary element that the displacement values belong to
+   * @param[in] field NekWriteEnum mesh_velocity_x/y/z field
+   */
+  void calculateMeshVelocity(int e, const field::NekWriteEnum & field);
 
   /// Whether a heat source will be applied to NekRS from MOOSE
   const bool & _has_heat_source;
+
+  /**
+   * Whether to conserve heat flux received in NekRS by individually re-normalizing
+   * with integrals over individual sideset. This approach is technically more accurate,
+   * but places limitations on how the sidesets are defined (they should NOT share any
+   * nodes with one another) and more effort with vector postprocessors, so it is not
+   * the default.
+   */
+  const bool & _conserve_flux_by_sideset;
 
   /**
    * \brief Total surface-integrated flux coming from the coupled MOOSE app.
@@ -129,6 +156,17 @@ protected:
    * normalization of the heat flux applied on the nekRS mesh.
    */
   const PostprocessorValue * _flux_integral = nullptr;
+
+  /**
+   * \brief Sideset-wise surface-integrated flux coming from the coupled MOOSE app.
+   *
+   * The mesh used for the MOOSE app may be very different from the mesh used by nekRS.
+   * Elements may be much finer/coarser, and one element on the MOOSE app may not be a
+   * clear subset/superset of the elements on the nekRS mesh. Therefore, to ensure
+   * conservation of energy, we send the flux integrals for each sideset to nekRS for internal
+   * normalization of the heat flux applied on the nekRS mesh.
+   */
+  const VectorPostprocessorValue * _flux_integral_vpp = nullptr;
 
   /**
    * \brief Total volume-integrated heat source coming from the coupled MOOSE app.
@@ -168,26 +206,26 @@ protected:
   /// displacement in z for all nodes from MOOSE, for moving mesh problems
   double * _displacement_z = nullptr;
 
+  /// mesh velocity for a given element, used internally for calculating mesh velocity over one element
+  double * _mesh_velocity_elem = nullptr;
+
   /// temperature transfer variable written to be nekRS
   unsigned int _temp_var;
 
   /// flux transfer variable read from by nekRS
   unsigned int _avg_flux_var;
 
-  /// x-displacment transfer variable read from for moving mesh problems
+  /// x-displacment transfer variable read for moving mesh problems
   unsigned int _disp_x_var;
 
-  /// y-displacment transfer variable read from for moving mesh problems
+  /// y-displacment transfer variable read for moving mesh problems
   unsigned int _disp_y_var;
 
-  /// z-displacment transfer variable read from for moving mesh problems
+  /// z-displacment transfer variable read for moving mesh problems
   unsigned int _disp_z_var;
 
   /// volumetric heat source variable read from by nekRS
   unsigned int _heat_source_var;
-
-  /// flag to indicate whether this is the first pass to serialize the solution
-  static bool _first;
 
   /// quantities to write to  nrs->usrwrk (and the order to write them)
   MultiMooseEnum _usrwrk_indices;

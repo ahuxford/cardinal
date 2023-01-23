@@ -24,7 +24,6 @@
 #include "NekVolumeCoupling.h"
 #include "nekrs.hpp"
 #include "bcMap.hpp"
-#include "io.hpp"
 #include "udf.hpp"
 #include "meshSetup.hpp"
 #include "libmesh/point.h"
@@ -57,6 +56,21 @@ void setAbsoluteTol(double tol);
 void setRelativeTol(double tol);
 
 /**
+ * Nek's runtime statistics are formed by collecting a timer of both the initialization
+ * and accumulated run time. We unfortunately have to split this across multiple classes,
+ * so if we want correct times we need to have NekInitAction save the value of the time
+ * spent on initialization.
+ * @param[in] time time spent on initialization
+ */
+void setNekSetupTime(const double & time);
+
+/**
+ * Get time spent on initialization
+ * @return time spent on initialization
+ */
+double getNekSetupTime();
+
+/**
  * Set the start time used by NekRS
  * @param[in] start start time
  */
@@ -74,16 +88,18 @@ bool isInitialized();
  * @param[in] slot index in the nrs->usrwrk array to write
  * @param[in] prefix prefix for file name
  * @param[in] time simulation time to write file for
+ * @param[in] step time step index
  * @parma[in] write_coords whether to write the mesh coordinates
  */
-void write_usrwrk_field_file(const int & slot, const std::string & prefix, const dfloat & time, const bool & write_coords);
+void write_usrwrk_field_file(const int & slot, const std::string & prefix, const dfloat & time, const int & step, const bool & write_coords);
 
 /**
  * Write a field file containing pressure, velocity, and scalars with given prefix
  * @param[in] prefix three-character prefix
  * @param[in] time time
+ * @param[in] step time step index
  */
-void write_field_file(const std::string & prefix, const dfloat time);
+void write_field_file(const std::string & prefix, const dfloat time, const int & step);
 
 /**
  * Indicate whether NekRS was run in build-only mode (this doesn't actually
@@ -115,6 +131,24 @@ bool hasCHT();
  * @return whether nekRS's input file indicates a moving mesh
  */
 bool hasMovingMesh();
+
+/**
+ * Whether nekRS's input file indicates a variable time stepping scheme
+ * @return whether nekRS's input file indicates a variable time stepping
+ */
+bool hasVariableDt();
+
+/**
+ * Whether nekRS's input file has the elasticity mesh solver
+ * @return whether nekRS's input file has [MESH] solver = elasticity
+ */
+bool hasElasticitySolver();
+
+/**
+ * Whether nekRS's input file has the user mesh solver
+ * @return whether nekRS's input file has [MESH] solver = user
+ */
+bool hasUserMeshSolver();
 
 /**
  * Whether nekRS's input file intends to terminate the simulation based on a wall time
@@ -169,6 +203,13 @@ mesh_t * flowMesh();
 mesh_t * temperatureMesh();
 
 /**
+ * Get the mesh to act on
+ * @param[in] pp_mesh which NekRS mesh to operate on
+ * @return mesh to act on
+ */
+mesh_t * getMesh(const MooseEnum & pp_mesh);
+
+/**
  * Get the process rank
  * @return process rank
  */
@@ -204,13 +245,6 @@ bool hasScalarVariable(int scalarId);
  * @return whether nekRS has an OCCA kernel for apply a passive scalar source
  */
 bool hasHeatSourceKernel();
-
-/**
- * Get the corner indices for each element
- * @param[in] n order of mesh (0 = first-order, 1 = second-order)
- * @return corner indices of the HEX20 elements
- */
-std::vector<int> cornerGLLIndices(const int & n);
 
 /**
  * Whether the scratch space has already been allocated by the user
@@ -252,7 +286,7 @@ double Pr();
  */
 void copyScratchToDevice(const unsigned int & slots_reserved_by_cardinal);
 
-/// Copy volume deformation of mesh from host to device for moving-mesh problems
+/// Copy the boundary deformation from host to device
 void copyDeformationToDevice();
 
 template <typename T>
@@ -331,9 +365,11 @@ Point gllPointFace(int local_elem_id, int local_face_id, int local_node_id);
 /**
  * Integrate the interpolated flux over the boundaries of the data transfer mesh
  * @param[in] nek_boundary_coupling data structure holding boundary coupling info
+ * @param[in] boundary boundaries over which to integrate the flux
  * @return boundary integrated flux
  */
-double fluxIntegral(const NekBoundaryCoupling & nek_boundary_coupling);
+std::vector<double> fluxIntegral(const NekBoundaryCoupling & nek_boundary_coupling,
+                                 const std::vector<int> & boundary);
 
 /**
  * Integrate the interpolated heat source over the volume of the data transfer mesh
@@ -345,12 +381,29 @@ double sourceIntegral(const NekVolumeCoupling & nek_volume_coupling);
 /**
  * Normalize the flux sent to nekRS to conserve the total flux
  * @param[in] nek_boundary_coupling data structure holding boundary coupling info
+ * @param[in] boundary boundaries for which to normalize the flux
+ * @param[in] moose_integral total integrated flux from MOOSE to conserve
+ * @param[in] nek_integral total integrated flux in nekRS to adjust
+ * @param[out] normalized_nek_integral final normalized nek flux integral
+ * @return whether normalization was successful, i.e. normalized_nek_integral equals moose_integral
+ */
+bool normalizeFluxBySideset(const NekBoundaryCoupling & nek_boundary_coupling,
+                   const std::vector<int> & boundary,
+                   const std::vector<double> & moose_integral,
+                   std::vector<double> & nek_integral,
+                   double & normalized_nek_integral);
+
+/**
+ * Normalize the flux sent to nekRS to conserve the total flux
+ * @param[in] nek_boundary_coupling data structure holding boundary coupling info
+ * @param[in] boundary boundaries for which to normalize the flux
  * @param[in] moose_integral total integrated flux from MOOSE to conserve
  * @param[in] nek_integral total integrated flux in nekRS to adjust
  * @param[out] normalized_nek_integral final normalized nek flux integral
  * @return whether normalization was successful, i.e. normalized_nek_integral equals moose_integral
  */
 bool normalizeFlux(const NekBoundaryCoupling & nek_boundary_coupling,
+                   const std::vector<int> & boundary,
                    const double moose_integral,
                    double nek_integral,
                    double & normalized_nek_integral);
@@ -371,23 +424,37 @@ bool normalizeHeatSource(const NekVolumeCoupling & nek_volume_coupling,
 /**
  * Compute the area of a set of boundary IDs
  * @param[in] boundary_id nekRS boundary IDs for which to perform the integral
+ * @param[in] pp_mesh which NekRS mesh to operate on
  * @return area integral
  */
-double area(const std::vector<int> & boundary_id);
+double area(const std::vector<int> & boundary_id, const MooseEnum & pp_mesh);
+
+/**
+ * Compute the area integral of a given slot in the usrwrk array over a set of boundary IDs
+ * @param[in] boundary_id nekRS boundary IDs for which to perform the integral
+ * @param[in] slot slot in usrwrk array
+ * @param[in] pp_mesh which NekRS mesh to operate on
+ * @return area integral of a component of the usrwrk array
+ */
+double usrWrkSideIntegral(const std::vector<int> & boundary_id, const unsigned int & slot,
+                          const MooseEnum & pp_mesh);
 
 /**
  * Compute the area integral of a given integrand over a set of boundary IDs
  * @param[in] boundary_id nekRS boundary IDs for which to perform the integral
  * @param[in] integrand field to integrate
+ * @param[in] pp_mesh which NekRS mesh to operate on
  * @return area integral of a field
  */
-double sideIntegral(const std::vector<int> & boundary_id, const field::NekFieldEnum & integrand);
+double sideIntegral(const std::vector<int> & boundary_id, const field::NekFieldEnum & integrand,
+                    const MooseEnum & pp_mesh);
 
 /**
  * Compute the volume over the entire scalar mesh
+ * @param[in] pp_mesh which NekRS mesh to operate on
  * @return volume integral
  */
-double volume();
+double volume(const MooseEnum & pp_mesh);
 
 /**
  * Dimensionalize a volume
@@ -426,41 +493,52 @@ void dimensionalizeSideIntegral(const field::NekFieldEnum & integrand,
  * @param[in] integrand field to dimensionalize
  * @param[in] boundary_id boundary IDs for the integral
  * @param[in] integral integral to dimensionalize
+ * @param[in] pp_mesh which NekRS mesh to operate on
  */
 void dimensionalizeSideIntegral(const field::NekFieldEnum & integrand,
                                 const std::vector<int> & boundary_id,
-                                double & integral);
+                                double & integral,
+                                const MooseEnum & pp_mesh);
 
 /**
  * Compute the volume integral of a given integrand over the entire scalar mesh
  * @param[in] integrand field to integrate
  * @param[in] volume volume of the domain (only used for dimensionalizing temperature)
+ * @param[in] pp_mesh which NekRS mesh to operate on
  * @return volume integral of a field
  */
-double volumeIntegral(const field::NekFieldEnum & integrand, const double & volume);
+double volumeIntegral(const field::NekFieldEnum & integrand,
+                      const double & volume,
+                      const MooseEnum & pp_mesh);
 
 /**
  * Compute the mass flowrate over a set of boundary IDs
  * @param[in] boundary_id nekRS boundary IDs for which to compute the mass flowrate
+ * @param[in] pp_mesh which NekRS mesh to operate on
  * @return mass flowrate
  */
-double massFlowrate(const std::vector<int> & boundary_id);
+double massFlowrate(const std::vector<int> & boundary_id,
+                    const MooseEnum & pp_mesh);
 
 /**
  * Compute the mass flux weighted integral of a given integrand over a set of boundary IDs
  * @param[in] boundary_id nekRS boundary IDs for which to perform the integral
  * @param[in] integrand field to integrate and weight by mass flux
+ * @param[in] pp_mesh which NekRS mesh to operate on
  * @return mass flux weighted area average of a field
  */
 double sideMassFluxWeightedIntegral(const std::vector<int> & boundary_id,
-                                    const field::NekFieldEnum & integrand);
+                                    const field::NekFieldEnum & integrand,
+                                    const MooseEnum & pp_mesh);
 
 /**
  * Compute the heat flux over a set of boundary IDs
  * @param[in] boundary_id nekRS boundary IDs for which to perform the integral
+ * @param[in] pp_mesh which NekRS mesh to operate on
  * @return heat flux area integral
  */
-double heatFluxIntegral(const std::vector<int> & boundary_id);
+double heatFluxIntegral(const std::vector<int> & boundary_id,
+                        const MooseEnum & pp_mesh);
 
 /**
  * Limit the temperature in nekRS to within the range of [min_T, max_T]
@@ -473,39 +551,49 @@ void limitTemperature(const double * min_T, const double * max_T);
  * Compute the gradient of a volume field
  * @param[in] offset in the gradient field for each component (grad_x, grad_y, or grad_z)
  * @param[in] f field to compute the gradient of
+ * @param[in] pp_mesh which NekRS mesh to operate on
  * @param[out] grad_f gradient of field
  */
-void gradient(const int offset, const double * f, double * grad_f);
+void gradient(const int offset, const double * f, double * grad_f,
+              const MooseEnum & pp_mesh);
 
 /**
  * Find the minimum of a given field over the entire nekRS domain
  * @param[in] field field to find the minimum value of
+ * @param[in] pp_mesh which NekRS mesh to operate on
  * @return minimum value of field in volume
  */
-double volumeMinValue(const field::NekFieldEnum & field);
+double volumeMinValue(const field::NekFieldEnum & field,
+                      const MooseEnum & pp_mesh);
 
 /**
  * Find the maximum of a given field over the entire nekRS domain
  * @param[in] field field to find the minimum value of
+ * @param[in] pp_mesh which NekRS mesh to operate on
  * @return maximum value of field in volume
  */
-double volumeMaxValue(const field::NekFieldEnum & field);
+double volumeMaxValue(const field::NekFieldEnum & field,
+                      const MooseEnum & pp_mesh);
 
 /**
  * Find the minimum of a given field over a set of boundary IDs
  * @param[in] boundary_id nekRS boundary IDs for which to find the extreme value
  * @param[in] field field to find the minimum value of
+ * @param[in] pp_mesh which NekRS mesh to operate on
  * @return minimum value of field on boundary
  */
-double sideMinValue(const std::vector<int> & boundary_id, const field::NekFieldEnum & field);
+double sideMinValue(const std::vector<int> & boundary_id, const field::NekFieldEnum & field,
+                    const MooseEnum & pp_mesh);
 
 /**
  * Find the maximum of a given field over a set of boundary IDs
  * @param[in] boundary_id nekRS boundary IDs for which to find the extreme value
  * @param[in] field field to find the maximum value of
+ * @param[in] pp_mesh which NekRS mesh to operate on
  * @param maximum value of field on boundary
  */
-double sideMaxValue(const std::vector<int> & boundary_id, const field::NekFieldEnum & field);
+double sideMaxValue(const std::vector<int> & boundary_id, const field::NekFieldEnum & field,
+                    const MooseEnum & pp_mesh);
 
 namespace mesh
 {
@@ -521,6 +609,13 @@ int Nfaces();
  * @return whether boundary is a flux boundary
  */
 bool isHeatFluxBoundary(const int boundary);
+
+/**
+ * Whether the specific boundary is a moving mesh boundary
+ * @param[in] boundary boundary ID
+ * @return whether boundary is a moving mesh boundary
+ */
+bool isMovingMeshBoundary(const int boundary);
 
 /**
  * Whether the specific boundary is a specified temperature boundary
@@ -547,6 +642,12 @@ int polynomialOrder();
  * @return number of volume elements
  */
 int Nelements();
+
+/**
+ * Total number of volume elements in the flow portion of the NekRS mesh, summed over all processes
+ * @return number of flow volume elements
+ */
+int NflowElements();
 
 /**
  * Mesh dimension
@@ -601,11 +702,11 @@ struct usrwrkIndices
 
   int heat_source;
 
-  int x_displacement;
+  int mesh_velocity_x;
 
-  int y_displacement;
+  int mesh_velocity_y;
 
-  int z_displacement;
+  int mesh_velocity_z;
 };
 
 namespace solution

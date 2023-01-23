@@ -30,21 +30,6 @@
   []
 []
 
-# This AuxVariable and AuxKernel is only here to get the postprocessors
-# to evaluate correctly. This can be deleted after MOOSE issue #17534 is fixed.
-[AuxVariables]
-  [dummy]
-  []
-[]
-
-[AuxKernels]
-  [dummy]
-    type = ConstantAux
-    variable = dummy
-    value = 0.0
-  []
-[]
-
 [Problem]
   type = OpenMCCellAverageProblem
   verbose = true
@@ -58,7 +43,6 @@
   initial_properties = xml
 
   tally_score = flux
-  tally_name = 'flux'
 []
 
 [Executioner]
@@ -98,6 +82,5 @@
 []
 
 [Outputs]
-  exodus = true
   csv = true
 []

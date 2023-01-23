@@ -12,21 +12,6 @@
   allow_renumbering = false
 []
 
-# This AuxVariable and AuxKernel is only here to get the postprocessors
-# to evaluate correctly. This can be deleted after MOOSE issue #17534 is fixed.
-[AuxVariables]
-  [dummy]
-  []
-[]
-
-[AuxKernels]
-  [dummy]
-    type = ConstantAux
-    variable = dummy
-    value = 0.0
-  []
-[]
-
 [Problem]
   type = OpenMCCellAverageProblem
   solid_blocks = '100'
@@ -42,7 +27,6 @@
   check_zero_tallies = false
 
   output = 'unrelaxed_tally_std_dev'
-  output_name = 'fission_tally_std_dev'
 []
 
 [Executioner]
@@ -53,12 +37,12 @@
 [Postprocessors]
   [heat_source_at_pt]
     type = PointValue
-    variable = heat_source
+    variable = kappa_fission
     point = '0.896826 0.189852 0.608855' # centroid of first element in mesh
   []
   [std_dev_at_pt]
     type = PointValue
-    variable = fission_tally_std_dev
+    variable = kappa_fission_std_dev
     point = '0.896826 0.189852 0.608855'
   []
 []

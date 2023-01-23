@@ -3,12 +3,8 @@
 This page summarizes recent changes to Cardinal and outlines a number of up-and-coming
 features.
 
-## Up-and-Coming Features
+## Up-and-Coming
 
-- The NekRS wrapping has basic support for applying MOOSE volume deformations to
-  a NekRS mesh. This is being extended for boundary-based mesh deformations by
-  connecting NekRS's [ALE solver](https://www.osti.gov/biblio/1510253) to MOOSE's
-  tensor mechanics module.
 - OpenMC will soon support unstructured mesh tracking; we will extend the OpenMC
   wrapping to support tracking directly on a `MooseMesh`, combined with mesh
   deformations from MOOSE's tensor mechanics module.
@@ -18,6 +14,9 @@ features.
 Below are updates on developments from Cardinal. Any months not included did not
 have significant software updates to report.
 
+- [December 2022](news/december2022.md)
+- [November 2022](news/november2022.md)
+- [October 2022](news/october2022.md)
 - [July 2022](news/july2022.md)
 - [June 2022](news/june2022.md)
 - [May 2022](news/may2022.md)

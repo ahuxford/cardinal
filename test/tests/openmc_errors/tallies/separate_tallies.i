@@ -30,21 +30,6 @@
   []
 []
 
-# This AuxVariable and AuxKernel is only here to get the postprocessors
-# to evaluate correctly. This can be deleted after MOOSE issue #17534 is fixed.
-[AuxVariables]
-  [dummy]
-  []
-[]
-
-[AuxKernels]
-  [dummy]
-    type = ConstantAux
-    variable = dummy
-    value = 0.0
-  []
-[]
-
 [Problem]
   type = OpenMCCellAverageProblem
   power = 100.0
@@ -57,34 +42,10 @@
 
   assume_separate_tallies = true
 
-  # This turns off the density and temperature update on the first syncSolutions;
-  # this uses whatever temperature and densities are set in OpenMCs XML files for first step
   initial_properties = xml
 []
 
 [Executioner]
   type = Transient
   num_steps = 1
-[]
-
-[Postprocessors]
-  [heat_source]
-    type = ElementIntegralVariablePostprocessor
-    variable = heat_source
-  []
-  [fluid_heat_source]
-    type = ElementIntegralVariablePostprocessor
-    variable = heat_source
-    block = '200'
-  []
-  [solid_heat_source]
-    type = ElementIntegralVariablePostprocessor
-    variable = heat_source
-    block = '100'
-  []
-[]
-
-[Outputs]
-  exodus = true
-  hide = 'dummy density'
 []

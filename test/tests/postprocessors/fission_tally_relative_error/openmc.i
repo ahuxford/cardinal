@@ -17,21 +17,6 @@
   []
 []
 
-# This AuxVariable and AuxKernel is only here to get the postprocessors
-# to evaluate correctly. This can be deleted after MOOSE issue #17534 is fixed.
-[AuxVariables]
-  [dummy]
-  []
-[]
-
-[AuxKernels]
-  [dummy]
-    type = ConstantAux
-    variable = dummy
-    value = 0.0
-  []
-[]
-
 [Problem]
   type = OpenMCCellAverageProblem
   power = 100.0
@@ -43,10 +28,7 @@
 
   # this outputs the fission tally standard deviation in space
   output = 'unrelaxed_tally_std_dev'
-  output_name = 'fission_tally_std_dev'
 
-  # This turns off the density and temperature update on the first syncSolutions;
-  # this uses whatever temperature and densities are set in OpenMCs XML files for first step
   initial_properties = xml
 []
 
@@ -57,42 +39,42 @@
 
 [Postprocessors]
   [max_rel_err]
-    type = FissionTallyRelativeError
+    type = TallyRelativeError
     value_type = max
   []
   [min_rel_err]
-    type = FissionTallyRelativeError
+    type = TallyRelativeError
     value_type = min
   []
   [power_1]
     type = PointValue
-    variable = heat_source
+    variable = kappa_fission
     point = '0 0 0'
   []
   [power_2]
     type = PointValue
-    variable = heat_source
+    variable = kappa_fission
     point = '0 0 4'
   []
   [power_3]
     type = PointValue
-    variable = heat_source
+    variable = kappa_fission
     point = '0 0 8'
   []
 
   [std_dev_1]
     type = PointValue
-    variable = fission_tally_std_dev
+    variable = kappa_fission_std_dev
     point = '0 0 0'
   []
   [std_dev_2]
     type = PointValue
-    variable = fission_tally_std_dev
+    variable = kappa_fission_std_dev
     point = '0 0 4'
   []
   [std_dev_3]
     type = PointValue
-    variable = fission_tally_std_dev
+    variable = kappa_fission_std_dev
     point = '0 0 8'
   []
 []

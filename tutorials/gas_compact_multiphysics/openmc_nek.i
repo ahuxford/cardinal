@@ -26,7 +26,7 @@ N = 1000
     tri_subdomain_id = 102
   []
   [extrude]
-    type = FancyExtruderGenerator
+    type = AdvancedExtruderGenerator
     input = coolant_face
     num_layers = ${num_layers_for_THM}
     direction = '0 0 1'
@@ -123,6 +123,7 @@ N = 1000
   fluid_blocks = ${fluid_blocks}
   tally_blocks = 'compacts'
   tally_type = cell
+  tally_name = heat_source
   solid_cell_level = 1
   fluid_cell_level = 1
 
@@ -189,7 +190,7 @@ N = 1000
     execute_on = 'transfer initial timestep_end'
   []
   [max_tally_err]
-    type = FissionTallyRelativeError
+    type = TallyRelativeError
     value_type = max
   []
   [k]

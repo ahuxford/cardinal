@@ -22,6 +22,7 @@ without *any* modifications.
 The smallest possible MOOSE-wrapped input file that can be used to run NekRS standalone
 cases is shown below. This input file in particular runs the `channel` example that ships
 with the NekRS repository.
+
 In this input file, `casename` is the prefix describing the NekRS input files, i.e. this
 parameter would be `casename = channel` if the NekRS input files are `channel.re2`,
 `channel.par`, `channel.udf`, and `channel.oudf`.
@@ -150,3 +151,9 @@ the [MOOSE documentation](https://mooseframework.inl.gov/source/index.html) to l
 ## Outputting the Scratch Array
 
 !include write_scratch.md
+
+!syntax parameters /Problem/NekRSStandaloneProblem
+
+!syntax inputs /Problem/NekRSStandaloneProblem
+
+!syntax children /Problem/NekRSStandaloneProblem

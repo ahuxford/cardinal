@@ -19,20 +19,7 @@
   allow_renumbering = false
 []
 
-# This AuxVariable and AuxKernel is only here to get the postprocessors
-# to evaluate correctly. This can be deleted after MOOSE issue #17534 is fixed.
-[AuxVariables]
-  [cell_temperature]
-    family = MONOMIAL
-    order = CONSTANT
-  []
-[]
-
 [AuxKernels]
-  [cell_temperature]
-    type = CellTemperatureAux
-    variable = cell_temperature
-  []
   [temp]
     type = FunctionAux
     variable = temp
@@ -54,6 +41,7 @@
   power = 1500.0
   solid_blocks = '0'
   tally_type = mesh
+  tally_name = heat_source
   mesh_template = ../../meshes/sphere_in_m.e
   mesh_translations = '0.0 0.0 0.02
                        0.0 0.0 0.06
@@ -62,11 +50,28 @@
   scaling = 100.0
 
   output = 'unrelaxed_tally'
-  output_name = 'fission_tally'
   relaxation = constant
 
   check_tally_sum = false
 []
+
+# This auxvariable and auxkernel is only here to avoid a re-gold (due to a
+# variable name change).
+[AuxVariables]
+  [fission_tally]
+    family = MONOMIAL
+    order = CONSTANT
+  []
+[]
+
+[AuxKernels]
+  [copy]
+    type = SelfAux
+    variable = fission_tally
+    v = heat_source_raw
+  []
+[]
+
 
 [Executioner]
   type = Transient
@@ -75,5 +80,5 @@
 
 [Outputs]
   exodus = true
-  hide = 'cell_temperature'
+  hide = 'heat_source_raw'
 []

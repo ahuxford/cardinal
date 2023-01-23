@@ -35,21 +35,6 @@
   allow_renumbering = false
 []
 
-# This AuxVariable and AuxKernel is only here to get the postprocessors
-# to evaluate correctly. This can be deleted after MOOSE issue #17534 is fixed.
-[AuxVariables]
-  [dummy]
-  []
-[]
-
-[AuxKernels]
-  [dummy]
-    type = ConstantAux
-    variable = dummy
-    value = 0.0
-  []
-[]
-
 [Problem]
   type = OpenMCCellAverageProblem
   solid_blocks = '100 200 300'
@@ -59,6 +44,7 @@
   normalize_by_global_tally = false
 
   tally_type = mesh
+  tally_name = heat_source
 
   # Because the [Mesh] is in units of meters, the mesh translations and mesh template
   # must also be in units of meters
@@ -99,5 +85,5 @@
 
 [Outputs]
   exodus = true
-  hide = 'dummy temp'
+  hide = 'temp'
 []

@@ -17,18 +17,7 @@
   []
 []
 
-[AuxVariables]
-  [cell_temperature]
-    family = MONOMIAL
-    order = CONSTANT
-  []
-[]
-
 [AuxKernels]
-  [cell_temperature]
-    type = CellTemperatureAux
-    variable = cell_temperature
-  []
   [temp]
     type = FunctionAux
     variable = temp
@@ -51,12 +40,29 @@
   solid_blocks = '0'
   tally_blocks = '0'
   tally_type = cell
+  tally_name = heat_source
   solid_cell_level = 1
   scaling = 100.0
 
   output = 'unrelaxed_tally'
-  output_name = 'fission_tally'
   relaxation = constant
+[]
+
+# This auxvariable and auxkernel are only here to avoid a re-gold (due to a
+# variable name change).
+[AuxVariables]
+  [fission_tally]
+    family = MONOMIAL
+    order = CONSTANT
+  []
+[]
+
+[AuxKernels]
+  [copy]
+    type = SelfAux
+    variable = fission_tally
+    v = heat_source_raw
+  []
 []
 
 [Executioner]
@@ -66,5 +72,5 @@
 
 [Outputs]
   exodus = true
-  hide = 'cell_temperature'
+  hide = 'heat_source_raw'
 []

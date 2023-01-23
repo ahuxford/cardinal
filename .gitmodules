@@ -13,9 +13,6 @@
 [submodule "contrib/sockeye"]
 	path = contrib/sockeye
 	url = git@hpcgitlab.hpc.inl.gov:idaholab/sockeye.git
-[submodule "contrib/thm"]
-	path = contrib/thm
-	url = git@hpcgitlab.hpc.inl.gov:idaholab/thm.git
 [submodule "contrib/sodium"]
 	path = contrib/sodium
 	url = git@hpcgitlab.hpc.inl.gov:idaholab/sodium.git
@@ -25,3 +22,9 @@
 [submodule "contrib/iapws95"]
 	path = contrib/iapws95
 	url = git@hpcgitlab.hpc.inl.gov:idaholab/iapws95.git
+[submodule "contrib/DAGMC"]
+	path = contrib/DAGMC
+	url = https://github.com/svalinn/DAGMC
+[submodule "contrib/moab"]
+	path = contrib/moab
+	url = https://bitbucket.org/fathomteam/moab

@@ -42,6 +42,7 @@
   solid_blocks = '1 2 3'
   tally_blocks = '2 3'
   tally_type = cell
+  tally_name = heat_source
   solid_cell_level = 0
 []
 
@@ -59,7 +60,7 @@
     variable = heat_source
   []
   [max_tally_rel_err]
-    type = FissionTallyRelativeError
+    type = TallyRelativeError
   []
   [max_heat_source]
     type = ElementExtremeValue
