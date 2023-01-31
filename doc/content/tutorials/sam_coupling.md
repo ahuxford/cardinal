@@ -2,33 +2,38 @@
 
 In this tutorial, you will learn how to:
 
-- Couple NekRS with a System Thermal Hydraulics (STH) code for tracking scalar transport in a double T-junction with flow recirculation
-- Solve NekRS and an STH code in dimensional form
-- Utilize NekRS's RANS $k-\tau$ model with an additional passive scalar for tracer modeling
+- Couple NekRS with a System Thermal Hydraulics (STH) code for tracking scalar transport in a double T-junction loop with flow recirculation
+- Demonstrate NekRS's superior 3D scalar mixing prediction compared to an STH code
+- Solve NekRS in dimensional form
+- Utilize NekRS's RANS $k-\tau$ model with passive scalar transport
+
+!alert! note title=Computing Needs
+The coupled simulation requires about 8 hours to run on an 80-core node on ANL's eddy computing cluster.
+!alert-end!
+
 
 This tutorial describes how to couple NekRS to a System Thernal Hydraulics (STH) code
 utilizing Cardinal's [NekRSSeparateDomainProblem](/problems/NekRSSeparateDomainProblem.md) class.
-This class is used to couple mass, momentum, and scalar conservation
-between NekRS and an STH code by exchanging boundary conditions
+This class is used in this tutorial to couple mass, momentum, and scalar conservation
+between NekRS and an STH code by exchanging boundary condition information
 for velocity, pressure, and a passive scalar.
 
 ## Geometry and computational model
 
 For a real-world application of the coupling, we will utilize the double T-junction
-scalar mixing experiment from [!cite](bertolotto), which provides a complete
-description of the experiment. We will use and show
-the use of NekRS for improved 3D mixing of a passive scalar compared
-to a 1D STH code. The double T-junction’s setup is shown in [doublet], and it contains two
+scalar mixing experiment from [!cite](bertolotto). We will use and show
+the use of NekRS for improved prediction of 3D mixing of a passive scalar compared
+to a 1D STH code. A schematic of the double T-junction experiment is shown in [doublet] and contains two
 loops joined by a double T-junction where one loop serves
-as the main line and one the recirculation line. The main
+as the main line and one as the recirculation line. The main
 line enforces a set flow rate into the double T-junction, and
-the recirculation line has a pump forcing flow back into the
+the recirculation line has a pump that enforces flow back into the
 double T-junction. The system is operated at atmospheric
 conditions with tap water as the working fluid. A tracer
 (deionized water) is injected within the side loop, and its
 concentration is measured at three different locations using
-wire mesh sensors (WM). The flow rate is controlled in each
-loop to maintain the same Reynolds number of 23,750.
+wire mesh sensors (WM). The flow rates are controlled in each
+loop to maintain an identical turbulent Reynolds number of 23,750.
 
 !media double_tjunction.png
   id=doublet
@@ -39,23 +44,18 @@ loop to maintain the same Reynolds number of 23,750.
 
 NekRS is used to model the double T-junction where
 3D mixing effects are most present, and the NekRS model
-employs a unsteady-RANS simulation with its 𝑘-𝜏 model
-along with an additional passive scalar for modeling the
-tracer’s transport. An all-hex mesh is generated using Gmsh
-[!cite](gmsh) while ensuring the wall
-y+ is below 1, and [doublet_nek_mesh] shows the NekRS mesh used.
-The NekRS predicted flow field is shown in [doublet_nek_flow] with
-boundaries labeled.
+employs a unsteady-RANS simulation with its $k-\tau$ model
+and an additional passive scalar for modeling the
+injected tracer. An all-hex mesh is generated using Gmsh
+[!cite](gmsh) while ensuring the wall y+ is below 1, and the NekRS
+`gmsh2nek` tool is used to convert to nek's mesh format.
 
-!media double_tjunction_nek_mesh.png
-  id=doublet_nek_mesh
-  caption=NekRS computational mesh used.
-  style=width:40%;margin-left:auto;margin-right:auto;halign:center
+!gallery! large=6
+!card media/double_tjunction_nek_mesh.png title=NekRS computational mesh
 
-!media double_tjunction_nek_flow.png
-  id=doublet_nek_flow
-  caption=NekRS’s predicted velocity field along the domain’s centerline, with boundaries labeled.
-  style=width:40%;margin-left:auto;margin-right:auto;halign:center
+!card media/double_tjunction_nek_flow.png title=NekRS predicted velocity field, with boundaries labeled
+!gallery-end!
+
 
 TODO: images side by side
 
@@ -86,12 +86,12 @@ same desired result.
 For the velocity field’s boundary conditions in Table 4, a
 developed profile from a periodic simulation is used for both
 inlets. However, the Side inlet’s velocity profile is scaled
-such that its average velocity matches the velocity 𝑈𝑆𝑇 𝐻
+such that its average velocity matches the velocity $U_{STH}$
 coming from SAM. For the tracer’s Side inlet boundary
 condition, Bertolotto et al. (2009) found that the distribution injected into the CFD domain has little influence on
 tracer concentrations extracted at wire mesh sensor locations.
-Therefore, a flat inlet distribution is used, corresponding to the value 𝑆𝑆𝑇 𝐻 from SAM, where 𝑆 denotes that the
-tracer is a passive scalar.
+Therefore, a flat inlet distribution is used, corresponding to the value $S_{STH}$ from SAM, where S denotes that the
+tracer being modeled a passive scalar.
 
 The initial tracer injection is simulated as a prescribed,
 time-dependent profile at NekRS’s Side inlet boundary, and
@@ -118,15 +118,19 @@ effects in the recirculation loop. Bertolotto (2011) used a
 similar value for their TRACE model of the same system.
 
 
-# Initial conditions
+# Setting initial conditions for coupled STH-NekRS simulation
 
-NekRS and STH's initial conditions are set using restart files,
-using the procedure outlined in nek-moose restart tutorial.
-TODO: link to nek+moose restart tutorial
+NekRS and the STH code's initial conditions are set from restart files
+following the [Restarting coupled NekRS and MOOSE simulations](tutorials/restart_nek_moose.md)
+tutorial.
 
 # NekRS Input Files
 
 TODO
+- nekrs mesh, put on anl box
+- cardinal input file
+- multiApp transfers
+- .usr file for taking averages at WM locations
 
 # STH Input Files
 
@@ -136,8 +140,7 @@ TODO
 
 # Run the tutorial
 
-Alert, need space for NekRS computation
-- full 35 second simulation runs on 80 cores on ANL's Eddy cluster in ~ 8 hours.
+- write
 
 # Postprocessing Results
 
@@ -146,75 +149,45 @@ the area-averaged tracer concentration if obtained from the NekRS solution, and
 the coupled STH-NekRS coupled results are compared to experimental data
 as well as STH standalone results.
 
-## Video of coupled simulation
+## Video of coupled SAM-NekRS simulation
 
 The video in [doublet_vid] shows the coupled tracer concentration being
 injected and recirculated through the 3D NekRS domain and the 1D STH domain.
+Concentration profiles are shown with comparisons between experiment data,
+STH standalone and SAM-NekRS coupled results.
 
 !media double_tjunction_video.mp4
   id=doublet_vid
   caption=Video of coupled NekRS-STH simulation of tracer transport utilizing Paraview.
   style=width:95%;margin-left:auto;margin-right:auto;halign:center
 
-Coupled STH-NekRS concentration profiles
-For all present simulations, a time step size of 2.5e4 seconds is used. The simulations were repeated using a
-NekRS polynomial order of 3, 4, and 5. Results using a
-polynomial order of 4 and 5 did not differ significantly,
-so to limit computational expenses an order of 4 is used.
-For all comparisons, experiment data
-are compared to STH standalone and STH-NekRS coupled simulation results.
-
-The cross-section averaged concentration over time for
-the first flow through of tracer is shown in Fig. 11. WM1’s
-concentration profile in all simulations matches the experiment exactly because this is the initial tracer injection
-used for all simulations. SAM-NekRS coupled results for
-WM2 and WM3 match the experiment better than the SAM
-standalone simulation while producing similar results to
-previous TRACE-CFX coupling. The SAM standalone simulation under predicts tracer recirculating in the recirculation
-loop through WM2 and over predicts tracer leaving the
-system through WM3. This is due to the 3D mixing effects
-present within the double T-junction, which SAM doesn’t
-take into account when using its 1D components.
+During the initial tracer injection, WM1’s concentration profile in all simulations
+exactly match the experiment because this is the initial tracer injection
+used for all simulations. SAM standalone simulation underpredicts tracer
+recirculation through WM2 and overpredicts tracer leaving through WM3. Coupled
+SAM-NekRS simulation produces improved results due to NekRS's improved prediction
+of 3D scalar mixing within the double T-junction. Such 3D mixing effects are not
+modeled within SAM's 1D components.
 
 After the first flow through, the tracer is recirculated
 through the side recirculation loop and re-enters the double
-T-Junction at WM1. The concentration over time for the
-second and third flow throughs are shown in Fig. 12. The
-SAM standalone simulation continues to under predict tracer
-recirculation through WM2 and over predict tracer leaving
-the system through WM3. SAM-NekRS coupled results are
-similar to previous TRACE-CFX results, but for WM2 and
-WM3, the present SAM-NekRS results match more closely
-with the experiment. This is likely due to a combination of
-effects stemming from differences in the codes and models
-used between the SAM-NekRS and TRACE-CFX coupling.
-SAM utilizes higher-order numerical methods than TRACE,
-resulting in a low amount of numerical diffusion that would
-greatly affect passive scalar transport, both spatially and
-temporally. As for the CFD models, NekRS uses the RANS
-𝑘-𝜏 model whereas CFX used the RANS SST (Shear Stress
-Transport) model. Different RANS models are expected to
-predict different flow fields, so for the double T-junction the
-NekRS RANS 𝑘-𝜏 model likely predicts a flow field more
-similar to the experiment compared to the CFX RANS SST
-model.
+T-Junction at WM1. The SAM standalone simulation continues to underpredict tracer
+recirculation through WM2 and overpredict tracer leaving
+the system through WM3. SAM-NekRS coupled results again
+match more closely with the experiment.
 
-## Concentration Integral plots
+## Concentration integral plots
 
 Next, concentration integrals are used to compare the
 total concentration of tracer passing through each wire mesh
 sensor over time. The concentration integrals are shown
-in Fig. 13, where each integral increases three times, one
-for each flow through of tracer. In Fig. 13 it is even more
-apparent that the SAM standalone simulation under predicts
-tracer recirculation (through WM2) and over predicts tracer
-leaving the system (through WM3). Furthermore, SAM-
-NekRS coupled results match experiment more closely than
-the previous TRACE-CFX coupling, with the largest dif-
-ference being in the WM3 concentration integral plot. This
-is likely due to differences in the predicted velocity field
-between NekRS’s RANS 𝑘-𝜏 model and CFX’s RANS SST
-model used by Bertolotto et al. (2009).
+in [doublet_concint], where each integral increases three times, one
+time for each flow through of tracer. In [doublet_concint] it is even more
+apparent that the SAM standalone simulation underpredicts
+tracer recirculation through WM2 and overpredicts tracer
+leaving the system through WM3. Furthermore, SAM-
+NekRS coupled results match experiment more closely, showing
+improved scalar transport modeling using the coupled SAM-NekRS model.
 
 !media double_tjunction_concint.png
   id=doublet_concint
