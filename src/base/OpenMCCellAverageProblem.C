@@ -64,7 +64,7 @@ OpenMCCellAverageProblem::validParams()
       "Subdomain ID(s) for which to add tallies in the OpenMC model; "
       "only used with cell tallies");
   params.addParam<bool>("check_tally_sum",
-                        "Whether to check consistency between the cell-wise tallies "
+                        "Whether to check consistency between the local tallies "
                         "with a global tally");
   params.addParam<bool>(
       "check_zero_tallies",
@@ -72,12 +72,6 @@ OpenMCCellAverageProblem::validParams()
       "Whether to throw an error if any tallies from OpenMC evaluate to zero; "
       "this can be helpful in reducing the number of tallies if you inadvertently add tallies "
       "to a non-fissile region, or for catching geomtery setup errors");
-  params.addParam<bool>(
-      "skip_first_incoming_transfer",
-      false,
-      "Whether to skip the very first density and temperature transfer into OpenMC; "
-      "this can be used to allow whatever initial condition is set in OpenMC's XML "
-      "files to be used in OpenMC's run the first time OpenMC is run");
   params.addParam<MooseEnum>(
       "initial_properties",
       getInitialPropertiesEnum(),
@@ -105,6 +99,7 @@ OpenMCCellAverageProblem::validParams()
       "Whether to assume that all tallies added by in the XML files and automatically "
       "by Cardinal are spatially separate. This is a performance optimization");
 
+  // TODO: would be nice to auto-detect this
   params.addParam<bool>("fixed_mesh", true,
     "Whether the MooseMesh is unchanging during the simulation (true), or whether there is mesh "
     "movement and/or adaptivity that is changing the mesh in time (false). When the mesh changes "
@@ -219,10 +214,13 @@ OpenMCCellAverageProblem::validParams()
                            "Number of particles to use for first iteration "
                            "when using Dufek-Gudowski relaxation");
 
+  params.addParam<UserObjectName>("symmetry_mapper", "User object (of type SymmetryPointGenerator) "
+    "to map from a symmetric OpenMC model to a full-domain [Mesh]. For example, you can use this "
+    "to map from a quarter-symmetric OpenMC model to a whole-domain [Mesh].");
   params.addParam<Point>("symmetry_plane_normal",
-                         "Normal that defines a symmetry plane in the OpenMC model");
+               "Normal that defines a symmetry plane in the OpenMC model");
   params.addParam<Point>("symmetry_axis",
-                         "Axis about which to rotate for angle-symmetric OpenMC models");
+               "Axis about which to rotate for angle-symmetric OpenMC models");
   params.addRangeCheckedParam<Real>(
       "symmetry_angle",
       "symmetry_angle > 0 & symmetry_angle <= 180",
@@ -243,10 +241,9 @@ OpenMCCellAverageProblem::OpenMCCellAverageProblem(const InputParameters & param
     _export_properties(getParam<bool>("export_properties")),
     _specified_scaling(params.isParamSetByUser("scaling")),
     _scaling(getParam<Real>("scaling")),
-    _run_mode(openmc::settings::run_mode),
     _normalize_by_global(_run_mode == openmc::RunMode::FIXED_SOURCE ? false :
                                       getParam<bool>("normalize_by_global_tally")),
-    _fixed_mesh(getParam<bool>("fixed_mesh")),
+    _need_to_reinit_coupling(!getParam<bool>("fixed_mesh")),
     _check_tally_sum(isParamValid("check_tally_sum") ? getParam<bool>("check_tally_sum") :
                                                        (_run_mode == openmc::RunMode::FIXED_SOURCE ?
                                                         true : _normalize_by_global)),
@@ -260,11 +257,33 @@ OpenMCCellAverageProblem::OpenMCCellAverageProblem(const InputParameters & param
     _has_solid_blocks(params.isParamSetByUser("solid_blocks")),
     _needs_global_tally(_check_tally_sum || _normalize_by_global),
     _tally_mesh_from_moose(!isParamValid("mesh_template")),
-    _total_n_particles(0),
     _temperature_vars(nullptr),
     _temperature_blocks(nullptr),
     _symmetry(nullptr)
 {
+  // We need to clear and re-initialize the OpenMC tallies if
+  // fixed_mesh is false, which indicates at least one of the following:
+  //   - the [Mesh] is being adaptively refined
+  //   - the [Mesh] is deforming in space
+  //
+  // If the [Mesh] is changing, then we certainly know that the mesh tallies
+  // need to be re-initialized because (a) for file-based mesh tallies, we need
+  // to enforce that the mesh is identical to the [Mesh] and (b) for directly
+  // tallying on the [Mesh], we need to pass that mesh info into OpenMC. For good
+  // measure, we also need to re-initialize cell tallies because it's possible
+  // that as the [Mesh] changes, the mapping from OpenMC cells to the [Mesh]
+  // also changes, which could open the door to new cell IDs/instances being added
+  // to the cell instance filter. If we need to re-init tallies, then we can't
+  // guarantee that the tallies from iteration to iteration correspond to exactly
+  // the same number of bins or to exactly the same regions of space, so we must
+  // disable relaxation.
+  if (_need_to_reinit_coupling && _relaxation != relaxation::none)
+    mooseError("When 'fixed_mesh' is false, the mapping from the OpenMC model to the [Mesh] may "
+      "vary in time. This means that we have no guarantee that the number of tally bins (or even "
+      "the regions of space corresponding to each bin) are fixed. Therefore, it is not "
+      "possible to apply relaxation to the OpenMC tallies because you might end up trying to add vectors "
+      "of different length (and possibly spatial mapping).");
+
   if (_run_mode == openmc::RunMode::FIXED_SOURCE)
     checkUnusedParam(params, "normalize_by_global_tally", "running OpenMC in fixed source mode");
 
@@ -274,20 +293,7 @@ OpenMCCellAverageProblem::OpenMCCellAverageProblem(const InputParameters & param
     if (_tally_type == tally::mesh && estimator == tally::tracklength)
       mooseError("Tracklength estimators are currently incompatible with mesh tallies!");
 
-    switch (estimator)
-    {
-      case tally::tracklength:
-        _tally_estimator = openmc::TallyEstimator::TRACKLENGTH;
-        break;
-      case tally::collision:
-        _tally_estimator = openmc::TallyEstimator::COLLISION;
-        break;
-      case tally::analog:
-        _tally_estimator = openmc::TallyEstimator::ANALOG;
-        break;
-      default:
-        mooseError("Unhandled TallyEstimatorEnum in OpenMCCellAverageProblem!");
-    }
+    _tally_estimator = tallyEstimator(estimator);
   }
   else
   {
@@ -355,32 +361,13 @@ OpenMCCellAverageProblem::OpenMCCellAverageProblem(const InputParameters & param
     if (_mesh.getMesh().allow_renumbering() && !_mesh.getMesh().is_replicated())
       mooseError("Mesh tallies currently require 'allow_renumbering = false' to be set in the [Mesh]!");
 
-  if (isParamValid("symmetry_plane_normal"))
-  {
-    const auto & normal = getParam<Point>("symmetry_plane_normal");
-    _symmetry.reset(new SymmetryPointGenerator(normal));
-
-    checkJointParams(params, {"symmetry_axis", "symmetry_angle"}, "specifying angular symmetry");
-
-    if (isParamValid("symmetry_axis"))
-    {
-      const auto & axis = getParam<Point>("symmetry_axis");
-      const auto & angle = getParam<Real>("symmetry_angle");
-      _symmetry->initializeAngularSymmetry(axis, angle);
-    }
-  }
-  else
-    checkUnusedParam(params, {"symmetry_plane_normal", "symmetry_axis", "symmetry_angle"},
-                             "not setting a symmetry plane");
+  if (isParamValid("symmetry_plane_normal") || isParamValid("symmetry_axis") || isParamValid("symmetry_angle"))
+    mooseError("The 'symmetry_plane_normal', 'symmetry_axis', and 'symmetry_angle' functionality has been moved into the SymmetryPointGenerator user object. Please add a SymmetryPointGenerator user object and pass into the 'symmetry_mapper' parameter.");
 
   if (_assume_separate_tallies && _needs_global_tally)
     paramError("assume_separate_tallies",
                "Cannot assume separate tallies when either of 'check_tally_sum' or"
                "'normalize_by_global_tally' is true!");
-
-  if (params.isParamSetByUser("skip_first_incoming_transfer"))
-    mooseError("The 'skip_first_incoming_transfer' parameter is deprecated and has been replaced "
-               "by the 'initial_properties' parameter!");
 
   // determine the number of particles set either through XML or the wrapping
   if (_relaxation == relaxation::dufek_gudowski)
@@ -511,12 +498,6 @@ OpenMCCellAverageProblem::OpenMCCellAverageProblem(const InputParameters & param
         mooseError("Unhandled OutputEnum in OpenMCCellAverageProblem!");
     }
   }
-
-  setupProblem();
-
-  initializeTallies();
-
-  checkMeshTemplateAndTranslations();
 }
 
 void
@@ -524,13 +505,35 @@ OpenMCCellAverageProblem::initialSetup()
 {
   OpenMCProblemBase::initialSetup();
 
-  if (_adaptivity.isOn() && _fixed_mesh)
+  if (_adaptivity.isOn() && !_need_to_reinit_coupling)
     mooseError("When using mesh adaptivity, 'fixed_mesh' must be false!");
+
+  if (isParamValid("symmetry_mapper"))
+  {
+    auto name = getParam<UserObjectName>("symmetry_mapper");
+    _symmetry = &getUserObject<SymmetryPointGenerator>(name);
+
+    if (!_symmetry)
+      mooseError("The 'symmetry_mapper' user object has to be of type SymmetryPointGenerator!");
+  }
+
+  setupProblem();
 }
 
 void
 OpenMCCellAverageProblem::setupProblem()
 {
+  // establish the local -> global element mapping for convenience
+  _local_to_global_elem.clear();
+  for (unsigned int e = 0; e < _mesh.nElem(); ++e)
+  {
+    const auto * elem = _mesh.queryElemPtr(e);
+    if (!isLocalElem(elem))
+      continue;
+
+    _local_to_global_elem.push_back(e);
+  }
+
   initializeElementToCellMapping();
 
   getMaterialFills();
@@ -550,6 +553,12 @@ OpenMCCellAverageProblem::setupProblem()
 
     _cell_to_n_contained[cell_info] = n_contained;
   }
+
+  subdomainsToMaterials();
+
+  initializeTallies();
+
+  checkMeshTemplateAndTranslations();
 }
 
 void
@@ -589,10 +598,7 @@ OpenMCCellAverageProblem::getTallyTriggerParameters(const InputParameters & para
     int err = openmc_set_n_batches(getParam<unsigned int>("max_batches"),
                                    true /* set the max batches */,
                                    true /* add the last batch for statepoint writing */);
-
-    if (err)
-      mooseError("In attempting to set the maximum number of batches, OpenMC reported:\n\n" +
-                 std::string(openmc_err_msg));
+    catchOpenMCError(err, "set the maximum number of batches");
 
     openmc::settings::trigger_batch_interval = getParam<unsigned int>("batch_interval");
   }
@@ -659,7 +665,7 @@ OpenMCCellAverageProblem::checkMeshTemplateAndTranslations()
   {
     const auto & filter = _mesh_filters[i];
 
-    for (unsigned int e = 0; e < filter->n_bins(); ++e)
+    for (int e = 0; e < filter->n_bins(); ++e)
     {
       auto elem_ptr = _mesh.queryElemPtr(offset + e);
 
@@ -762,7 +768,7 @@ OpenMCCellAverageProblem::getCellLevel(const std::string name, unsigned int & ce
     bool using_single_level = isParamValid(param_name);
     bool using_lowest_level = isParamValid(lowest_param_name);
 
-    if (using_single_level && using_lowest_level)
+    if (using_single_level == using_lowest_level)
       paramError(param_name,
                  "When specifying " + name + " blocks for coupling, either '" + param_name +
                      "' or '" + lowest_param_name +
@@ -822,7 +828,7 @@ OpenMCCellAverageProblem::readBlockParameters(const std::string name,
   }
 }
 
-const coupling::CouplingFields
+coupling::CouplingFields
 OpenMCCellAverageProblem::elemPhase(const Elem * elem) const
 {
   auto id = elem->subdomain_id();
@@ -909,7 +915,7 @@ OpenMCCellAverageProblem::gatherCellVector(std::vector<T> & local, std::vector<u
   }
 }
 
-const coupling::CouplingFields
+coupling::CouplingFields
 OpenMCCellAverageProblem::cellCouplingFields(const cellInfo & cell_info)
 {
   // _cell_to_elem only holds cells that are coupled by feedback to the [Mesh] (for sake of
@@ -1060,6 +1066,61 @@ OpenMCCellAverageProblem::getCellMappedSubdomains()
   }
 }
 
+std::set<SubdomainID>
+OpenMCCellAverageProblem::coupledSubdomains()
+{
+  std::set<SubdomainID> subdomains;
+  for (const auto & c : _cell_to_elem)
+  {
+    auto subdomains_spanning_cell = _cell_to_elem_subdomain[c.first];
+    for (const auto & s : subdomains_spanning_cell)
+      subdomains.insert(s);
+  }
+
+  return subdomains;
+}
+
+void
+OpenMCCellAverageProblem::subdomainsToMaterials()
+{
+  for (const auto & c : _cell_to_elem)
+  {
+    auto contained_cells = _cell_to_contained_material_cells[c.first];
+    for (const auto & contained : contained_cells)
+    {
+      for (const auto & instance : contained.second)
+      {
+        // we know this is a material cell, so we don't need to check that the fill is material
+        int32_t material_index;
+        cellInfo cell_info = {contained.first, instance};
+        materialFill(cell_info, material_index);
+
+        for (const auto & s : _cell_to_elem_subdomain[c.first])
+          _subdomain_to_material[s].insert(material_index);
+      }
+    }
+  }
+
+  VariadicTable<int, std::string> vt({"Subdomain ID", "Contained OpenMC Materials"});
+  auto subdomains = coupledSubdomains();
+  for (const auto & i : subdomains)
+  {
+    std::string mats = "";
+    for (const auto & m : _subdomain_to_material[i])
+      mats += " " + materialName(m) + ",";
+
+    mats.pop_back();
+    vt.addRow(i, mats);
+  }
+
+  if (_verbose)
+  {
+    _console << "\nMapping of subdomains to OpenMC materials:" << std::endl;
+    vt.print(_console);
+    _console << std::endl;
+  }
+}
+
 void
 OpenMCCellAverageProblem::checkCellMappedSubdomains()
 {
@@ -1120,16 +1181,14 @@ OpenMCCellAverageProblem::getMaterialFills()
     if (cellCouplingFields(cell_info) != coupling::density_and_temperature)
       continue;
 
-    int fill_type;
-    std::vector<int32_t> material_indices = cellFill(cell_info, fill_type);
+    int32_t material_index;
+    auto is_material_cell = materialFill(cell_info, material_index);
 
-    // OpenMC checks that for distributed cells, the number of materials either equals 1
-    // or the number of distributed cells; therefore, we just need to index based on the cell
-    // instance (zero for not-distributed cells, otherwise matches the material index)
-    int32_t material_index = material_indices[cell_info.second];
+    if (!is_material_cell)
+      mooseError("Density transfer does not currently support cells filled with universes or lattices!");
+
     _cell_to_material[cell_info] = material_index;
-
-    vt.addRow(printCell(cell_info), material_index);
+    vt.addRow(printCell(cell_info), materialID(material_index));
 
     // check for each material that we haven't already discovered it; if we have, this means we
     // didnt set up the materials correctly
@@ -1243,12 +1302,43 @@ OpenMCCellAverageProblem::initializeElementToCellMapping()
 
   // If there is a single coordinate level, we can print a helpful message if there are uncoupled
   // cells in the domain
-  if (_single_coord_level)
+  auto n_uncoupled_cells = _n_openmc_cells - _cell_to_elem.size();
+  if (_single_coord_level && n_uncoupled_cells)
   {
-    auto n_uncoupled_cells = _n_openmc_cells - _cell_to_elem.size();
-    if (n_uncoupled_cells)
-      mooseWarning("Skipping multiphysics feedback for " + Moose::stringify(n_uncoupled_cells) +
-                   " OpenMC cells!");
+    // Get the number of uncoupled material cells (which we presumably want to include in our
+    // coupling). We don't care about VOID cells, because they will never have feedback.
+    VariadicTable<std::string, std::string> vt({"Cell", "Contained OpenMC Materials"});
+
+    std::vector<cellInfo> missing_cells;
+    int n_missing = 0;
+    for (const auto & c : openmc::model::cells)
+    {
+      // for a single-level geometry, we know that all cells will have just 1 instance,
+      // because distributed cells are inherently tied to being repeated (which is not
+      // possible with a single universe)
+      cellInfo cell {openmc::model::cell_map[c->id_], 0 /* instance */};
+      if (!cellIsVoid(cell) && !_cell_to_elem.count(cell))
+      {
+        n_missing++;
+
+        int32_t material_index;
+        materialFill(cell, material_index);
+        vt.addRow(printCell(cell), materialName(material_index));
+      }
+    }
+
+    if (n_missing)
+    {
+      std::stringstream msg;
+      msg << "Skipping multiphysics feedback for " << n_missing <<
+             " OpenMC cells!\n\nThis means that there are " << n_missing <<
+             " non-void cells in your OpenMC model that will not receive feedback\n"
+             "from MOOSE. This is normal if you are intentionally excluding some cells from feedback. The\n"
+             "unmapped cells are:\n\n";
+
+      vt.print(msg);
+      mooseWarning(msg.str());
+    }
   }
 
   // Check that each cell maps to a single phase
@@ -1676,6 +1766,8 @@ OpenMCCellAverageProblem::storeTallyCells()
   cellInfo first_tally_cell;
   Real mapped_tally_volume;
 
+  _tally_cells.clear();
+
   for (const auto & c : _cell_to_elem)
   {
     auto cell_info = c.first;
@@ -1740,26 +1832,8 @@ OpenMCCellAverageProblem::storeTallyCells()
 void
 OpenMCCellAverageProblem::addLocalTally(const std::vector<std::string> & score, std::vector<openmc::Filter *> & filters)
 {
-  auto tally = openmc::Tally::create();
-  tally->set_scores(score);
-  tally->estimator_ = _tally_estimator;
-  tally->set_filters(filters);
+  auto tally = addTally(score, filters, _tally_estimator);
   _local_tally.push_back(tally);
-}
-
-openmc::Filter *
-OpenMCCellAverageProblem::cellInstanceFilter()
-{
-  auto cell_filter =
-      dynamic_cast<openmc::CellInstanceFilter *>(openmc::Filter::create("cellinstance"));
-
-  std::vector<openmc::CellInstance> cells;
-  for (const auto & c : _tally_cells)
-    cells.push_back(
-        {gsl::narrow_cast<gsl::index>(c.first), gsl::narrow_cast<gsl::index>(c.second)});
-
-  cell_filter->set_cell_instances(cells);
-  return cell_filter;
 }
 
 std::vector<openmc::Filter *>
@@ -1789,7 +1863,7 @@ OpenMCCellAverageProblem::meshFilter()
   tally_mesh->output_ = false;
   _mesh_template = tally_mesh.get();
 
-  int32_t mesh_index = openmc::model::meshes.size();
+  _mesh_index = openmc::model::meshes.size();
   openmc::model::meshes.push_back(std::move(tally_mesh));
 
   std::vector<openmc::Filter *> mesh_filters;
@@ -1798,7 +1872,7 @@ OpenMCCellAverageProblem::meshFilter()
   {
     const auto & translation = _mesh_translations[i];
     auto meshFilter = dynamic_cast<openmc::MeshFilter *>(openmc::Filter::create("mesh"));
-    meshFilter->set_mesh(mesh_index);
+    meshFilter->set_mesh(_mesh_index);
     meshFilter->set_translation({translation(0), translation(1), translation(2)});
     mesh_filters.push_back(meshFilter);
   }
@@ -1807,37 +1881,66 @@ OpenMCCellAverageProblem::meshFilter()
 }
 
 void
+OpenMCCellAverageProblem::resetTallies()
+{
+  if (_needs_global_tally)
+  {
+    // erase tally
+    auto idx = openmc::model::tallies.begin() + _global_tally_index;
+    openmc::model::tallies.erase(idx);
+  }
+
+  auto idx = openmc::model::tallies.begin() + _local_tally_index;
+  switch (_tally_type)
+  {
+    case tally::cell:
+    {
+      // erase tally
+      openmc::model::tallies.erase(idx);
+
+      // erase filter
+      auto fidx = openmc::model::tally_filters.begin() + _filter_index;
+      openmc::model::tally_filters.erase(fidx);
+      break;
+    }
+    case tally::mesh:
+    {
+      // erase tallies
+      openmc::model::tallies.erase(idx, idx + _mesh_translations.size());
+
+      // erase filters
+      auto fidx = openmc::model::tally_filters.begin() + _filter_index;
+      openmc::model::tally_filters.erase(fidx, fidx + _mesh_translations.size());
+
+      // erase meshes
+      auto midx = openmc::model::meshes.begin() + _mesh_index;
+      openmc::model::meshes.erase(midx);
+      break;
+    }
+    default:
+      mooseError("Unhandled TallyTypeEnum in OpenMCCellAverageProblem!");
+  }
+}
+
+void
 OpenMCCellAverageProblem::initializeTallies()
 {
   // add trigger information for k, if present
-  switch (_k_trigger)
-  {
-    case tally::variance:
-      openmc::settings::keff_trigger.metric = openmc::TriggerMetric::variance;
-      break;
-    case tally::std_dev:
-      openmc::settings::keff_trigger.metric = openmc::TriggerMetric::standard_deviation;
-      break;
-    case tally::rel_err:
-      openmc::settings::keff_trigger.metric = openmc::TriggerMetric::relative_error;
-      break;
-    case tally::none:
-      break;
-    default:
-      mooseError("Unhandled TallyTriggerTypeEnum!");
-  }
+  openmc::settings::keff_trigger.metric = triggerMetric(_k_trigger);
 
-  // create the global tally for normalization
+  // create the global tally for normalization; we make sure to use the
+  // same estimator as the local tally
   if (_needs_global_tally)
   {
     _global_tally = openmc::Tally::create();
     _global_tally->set_scores(_tally_score);
-
-    // we want to match the same estimator used for the local tally
     _global_tally->estimator_ = _tally_estimator;
 
+    _global_tally_index = openmc::model::tallies.size();
     _global_sum_tally.resize(_tally_score.size());
   }
+
+  _local_tally.clear();
 
   _local_sum_tally.resize(_tally_score.size());
   _local_mean_tally.resize(_tally_score.size());
@@ -1845,6 +1948,10 @@ OpenMCCellAverageProblem::initializeTallies()
   _current_raw_tally.resize(_tally_score.size());
   _current_raw_tally_std_dev.resize(_tally_score.size());
   _previous_tally.resize(_tally_score.size());
+
+  // we have not yet added the local tally, which is why we have +1 here
+  _local_tally_index = openmc::model::tallies.size() + 1;
+  _filter_index = openmc::model::tally_filters.size() + 1;
 
   // create the local tally
   switch (_tally_type)
@@ -1862,7 +1969,7 @@ OpenMCCellAverageProblem::initializeTallies()
         _previous_tally[i].resize(1);
       }
 
-      std::vector<openmc::Filter *> filter = {cellInstanceFilter()};
+      std::vector<openmc::Filter *> filter = {cellInstanceFilter(_tally_cells)};
       addLocalTally(_tally_score, filter);
 
       break;
@@ -1897,6 +2004,7 @@ OpenMCCellAverageProblem::initializeTallies()
         _previous_tally[i].resize(n_translations);
       }
 
+      _mesh_filters.clear();
       auto filters = meshFilter();
       for (const auto & m : filters)
         _mesh_filters.push_back(dynamic_cast<openmc::MeshFilter *>(m));
@@ -1941,29 +2049,8 @@ OpenMCCellAverageProblem::initializeTallies()
   // add trigger information, if present. TODO: we could have these triggers be individual
   // for each score later if needed
   for (auto & t : _local_tally)
-  {
     for (int score = 0; score < _tally_score.size(); ++score)
-    {
-      switch (_tally_trigger)
-      {
-        case tally::variance:
-          t->triggers_.push_back({openmc::TriggerMetric::variance, _tally_trigger_threshold, score});
-          break;
-        case tally::std_dev:
-          t->triggers_.push_back(
-              {openmc::TriggerMetric::standard_deviation, _tally_trigger_threshold, score});
-          break;
-        case tally::rel_err:
-          t->triggers_.push_back(
-              {openmc::TriggerMetric::relative_error, _tally_trigger_threshold, score});
-          break;
-        case tally::none:
-          break;
-        default:
-          mooseError("Unhandled TallyTriggerTypeEnum!");
-      }
-    }
-  }
+      t->triggers_.push_back({triggerMetric(_tally_trigger), _tally_trigger_threshold, score});
 
   // if the tally sum check is turned off, write a message informing the user
   if (!_check_tally_sum)
@@ -2027,7 +2114,7 @@ OpenMCCellAverageProblem::addExternalVariables()
   {
     std::map<std::string, std::vector<SubdomainName>> vars_to_blocks;
     std::set<SubdomainName> blocks;
-    for (int i = 0; i < _temperature_vars->size(); ++i)
+    for (std::size_t i = 0; i < _temperature_vars->size(); ++i)
     {
       auto var = (*_temperature_vars)[i];
       auto block = (*_temperature_blocks)[i];
@@ -2068,17 +2155,13 @@ OpenMCCellAverageProblem::addExternalVariables()
 void
 OpenMCCellAverageProblem::externalSolve()
 {
-  bool first_iteration = _fixed_point_iteration < 0;
-
   // if using Dufek-Gudowski acceleration and this is not the first iteration, update
   // the number of particles; we put this here so that changing the number of particles
   // doesn't intrude with any other postprocessing routines that happen outside this class's purview
-  if (_relaxation == relaxation::dufek_gudowski && !first_iteration)
+  if (_relaxation == relaxation::dufek_gudowski && !firstSolve())
     dufekGudowskiParticleUpdate();
 
   OpenMCProblemBase::externalSolve();
-
-  _total_n_particles += nParticles();
 }
 
 std::map<OpenMCCellAverageProblem::cellInfo, Real>
@@ -2447,8 +2530,11 @@ OpenMCCellAverageProblem::syncSolutions(ExternalProblem::Direction direction)
     case ExternalProblem::Direction::TO_EXTERNAL_APP:
     {
       // re-establish the mapping from the OpenMC cells to the [Mesh], if needed
-      if (!_first_transfer && !_fixed_mesh)
+      if (!_first_transfer && _need_to_reinit_coupling)
+      {
+        resetTallies();
         setupProblem();
+      }
 
       if (_first_transfer)
       {
@@ -2481,11 +2567,11 @@ OpenMCCellAverageProblem::syncSolutions(ExternalProblem::Direction direction)
       // transfer do we need to filter for the fluid cells
       sendTemperatureToOpenMC();
 
-      if (_export_properties)
-        openmc_properties_export("properties.h5");
-
       if (_has_fluid_blocks)
         sendDensityToOpenMC();
+
+      if (_export_properties)
+        openmc_properties_export("properties.h5");
 
       break;
     }
@@ -2553,17 +2639,20 @@ OpenMCCellAverageProblem::syncSolutions(ExternalProblem::Direction direction)
 void
 OpenMCCellAverageProblem::checkTallySum(const unsigned int & score) const
 {
-  if (std::abs(_global_sum_tally[score] - _local_sum_tally[score]) / _global_sum_tally[score] >
-      openmc::FP_REL_PRECISION)
+  if (std::abs(_global_sum_tally[score] - _local_sum_tally[score]) / _global_sum_tally[score] > 1e-6)
   {
     std::stringstream msg;
     msg << _tally_score[score] << " tallies do not match the global " << _tally_score[score] << " tally:\n"
         << " Global value: " << Moose::stringify(_global_sum_tally[score])
-        << "\n Tally sum: " << Moose::stringify(_local_sum_tally[score])
-        << "\n\nYou can turn off this check by setting 'check_tally_sum' to false.\n"
-           "Or, if you're using mesh tallies that don't perfectly align with cell boundaries,\n"
-           "you could be missing a small portion of the tally scores. To normalize by the total\n"
-           "tally (and evade this error), you can set 'normalize_by_global_tally' to false.";
+        << "\n Tally sum:    " << Moose::stringify(_local_sum_tally[score])
+        << "\n Difference:   " << _global_sum_tally[score] - _local_sum_tally[score]
+        << "\n\nThis means that the tallies created by Cardinal are missing some hits over the domain.\n"
+        << "You can turn off this check by setting 'check_tally_sum' to false.";
+
+    if (_tally_type == tally::mesh)
+      msg << "\n\nOr, if your mesh tally doesn't perfectly align with cell boundaries, you could be\n"
+             "missing a portion of the scores. To normalize by the total tally (and evade this error),\n"
+             "you can set 'normalize_by_global_tally' to false.";
 
     // Add on extra helpful messages if the domain has a single coordinate level
     // and cell tallies are used
@@ -2688,11 +2777,7 @@ OpenMCCellAverageProblem::cellTemperature(const cellInfo & cell_info)
 
   double T;
   int err = openmc_cell_get_temperature(material_cell.first, &material_cell.second, &T);
-
-  if (err)
-    mooseError("In attempting to get temperature of cell " + printCell(cell_info) +
-               ", OpenMC reported:\n\n" + std::string(openmc_err_msg));
-
+  catchOpenMCError(err, "get temperature of cell " + printCell(cell_info));
   return T;
 }
 

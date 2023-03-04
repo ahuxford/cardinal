@@ -19,12 +19,8 @@
 #pragma once
 
 #include "OpenMCProblemBase.h"
-#include "openmc/tallies/filter_cell.h"
-#include "openmc/tallies/filter_cell_instance.h"
 #include "openmc/tallies/filter_mesh.h"
 #include "openmc/mesh.h"
-#include "openmc/tallies/tally.h"
-#include "CardinalEnums.h"
 #include "SymmetryPointGenerator.h"
 
 /**
@@ -76,13 +72,8 @@ public:
   static InputParameters validParams();
 
   /**
-   * \brief Initialize the mapping of OpenMC to the MooseMesh and perform any additional setup actions.
-   *
-   * When 'fixed_mesh' is false, this function is called at the start of _each_ OpenMC
-   * run to establish the mapping from the OpenMC cells to the [Mesh].
-   * TODO: this function currently does not re-initialize tallies based on the updated mapping
-   *       (which will certainly need to be updated for any mesh tallies on the [Mesh], and might
-   *       need updating for cell tallies if the identities of the coupled OpenMC cells changes).
+   * Initialize the mapping of OpenMC to the MooseMesh and perform any additional setup actions
+   * like creating tallies.
    */
   void setupProblem();
 
@@ -172,12 +163,6 @@ public:
    */
   void getTally(const unsigned int & var_num, const std::vector<xt::xtensor<double, 1>> & tally,
     const unsigned int & score, const bool & print_table);
-
-  /**
-   * Get the cell instance filter for tallies automatically constructed by Cardinal
-   * @return cell instance filter
-   */
-  openmc::Filter * cellInstanceFilter();
 
   /**
    * Get the mesh filter(s) for tallies automatically constructed by Cardinal.
@@ -278,7 +263,7 @@ public:
    * @param[in] cell_info cell index, instance pair
    * @return coupling fields
    */
-  const coupling::CouplingFields cellCouplingFields(const cellInfo & cell_info);
+  coupling::CouplingFields cellCouplingFields(const cellInfo & cell_info);
 
   const std::vector<openmc::Tally *> & getLocalTally() const { return _local_tally; }
 
@@ -299,6 +284,15 @@ public:
   static constexpr int32_t UNMAPPED{-1};
 
 protected:
+  /// Loop over the mapped cells, and build a map between subdomains to OpenMC materials
+  void subdomainsToMaterials();
+
+  /**
+   * Get a set of all subdomains that have at least 1 element coupled to an OpenMC cell
+   * @return subdomains with at least 1 element coupled to OpenMC
+   */
+  std::set<SubdomainID> coupledSubdomains();
+
   /**
    * Gather a vector of values to be summed for each cell
    * @param[in] local local values to be summed for the cells
@@ -321,7 +315,7 @@ protected:
    * @param[in] elem
    * @return coupling phase
    */
-  const coupling::CouplingFields elemPhase(const Elem * elem) const;
+  coupling::CouplingFields elemPhase(const Elem * elem) const;
 
   /**
    * Read the parameters needed for triggers
@@ -499,8 +493,14 @@ protected:
   /// Populate maps of MOOSE elements to OpenMC cells
   void mapElemsToCells();
 
-  /// Add tallies for the fluid and/or solid cells
+  /// Add OpenMC tallies to facilitate the coupling
   void initializeTallies();
+
+  /**
+   * Reset any tallies previously added by Cardinal, by deleting them from OpenMC.
+   * Also delete any mesh filters and meshes added to OpenMC for mesh filters.
+   */
+  void resetTallies();
 
   /// Find the material filling each fluid cell
   void getMaterialFills();
@@ -713,9 +713,6 @@ protected:
    */
   const Real & _scaling;
 
-  /// OpenMC run mode
-  const openmc::RunMode _run_mode;
-
   /**
    * How to normalize the OpenMC tally into units of W/volume. If 'true',
    * normalization is performed by dividing each local tally against a problem-global
@@ -738,12 +735,12 @@ protected:
   const bool _normalize_by_global;
 
   /**
-   * Whether the [Mesh] is fixed and unchanging during the simulation, or whether
-   * the mesh moves spatially and/or is adaptively refine. When the mesh changes
-   * during the simulation, the mapping from OpenMC cells to the [Mesh] must be
-   * re-established after each OpenMC run.
+   * If 'fixed_mesh' is false, this indicates that the [Mesh] is changing during
+   * the simulation (either from adaptive refinement or from deformation).
+   * When the mesh changes during the simulation, the mapping from OpenMC cells to
+   * the [Mesh] must be re-established after each OpenMC run.
    */
-  const bool & _fixed_mesh;
+  const bool _need_to_reinit_coupling;
 
   /**
    * Whether to check the tallies against the global tally;
@@ -910,6 +907,9 @@ protected:
   /// Mapping of OpenMC cell indices to the subdomain IDs each maps to
   std::map<cellInfo, std::unordered_set<SubdomainID>> _cell_to_elem_subdomain;
 
+  /// Mapping of elem subdomains to materials
+  std::map<SubdomainID, std::unordered_set<int32_t>> _subdomain_to_material;
+
   /**
    * A point inside the cell, taken simply as the centroid of the first global
    * element inside the cell. This is stored to accelerate the particle search.
@@ -925,7 +925,11 @@ protected:
    */
   std::map<cellInfo, Real> _cell_to_elem_volume;
 
-  /// Material filling each cell
+  /**
+   * Material filling each cell to receive density & temperature feedback. We enforce
+   * that these "fluid" cells are filled with a material (cannot be filled with a lattice
+   * or universe).
+   */
   std::map<cellInfo, int32_t> _cell_to_material;
 
   /// Material-type cells contained within a cell
@@ -1013,9 +1017,6 @@ protected:
   /// Spatial dimension of the Monte Carlo problem
   static constexpr int DIMENSION{3};
 
-  /// Total number of particles simulated
-  unsigned int _total_n_particles;
-
   /// Number of particles simulated in the first iteration
   unsigned int _n_particles_1;
 
@@ -1053,8 +1054,8 @@ protected:
    */
   const std::vector<SubdomainName> * _temperature_blocks;
 
-  /// Helper utility to rotate [Mesh] points according to symmetry in OpenMC model
-  std::unique_ptr<SymmetryPointGenerator> _symmetry;
+  /// Userobject that maps from a partial-symmetry OpenMC model to a whole-domain [Mesh]
+  const SymmetryPointGenerator * _symmetry;
 
   /// Number of solid elements in each mapped OpenMC cell (global)
   std::map<cellInfo, int> _n_solid;
@@ -1064,6 +1065,18 @@ protected:
 
   /// Number of none elements in each mapped OpenMC cell (global)
   std::map<cellInfo, int> _n_none;
+
+  /// Index in OpenMC tallies corresponding to the global tally added by Cardinal
+  unsigned int _global_tally_index;
+
+  /// Index in OpenMC tallies corresponding to the first local tally added by Cardinal
+  unsigned int _local_tally_index;
+
+  /// Index in OpenMC tally filters corresponding to the first filter added by Cardinal
+  unsigned int _filter_index;
+
+  /// Index in OpenMC meshes corresponding to the mesh tally (if used)
+  unsigned int _mesh_index;
 
   /// Conversion rate from eV to Joule
   static constexpr Real EV_TO_JOULE = 1.6022e-19;

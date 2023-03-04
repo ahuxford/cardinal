@@ -22,6 +22,9 @@
 
 #include "ExternalProblem.h"
 #include "PostprocessorInterface.h"
+#include "CardinalEnums.h"
+
+#include "openmc/tallies/filter_cell_instance.h"
 #include "openmc/tallies/tally.h"
 
 /**
@@ -35,6 +38,37 @@ public:
   static InputParameters validParams();
 
   virtual ~OpenMCProblemBase() override;
+
+  /**
+   * Print a full error message when catching errors from OpenMC
+   * @param[in] err OpenMC error code
+   * @param[in] descriptor descriptive message for error
+   */
+  void catchOpenMCError(const int & err, const std::string descriptor) const;
+
+  /**
+   * Find the geometry type in the OpenMC model
+   * @param[out] has_csg_universe whether there is at least 1 CSG universe
+   * @param[out] has_dag_universe whether there is at least 1 DagMC universe
+   */
+  virtual void geometryType(bool & has_csg_universe, bool & has_dag_universe) const;
+
+  /// Whether this is the first time OpenMC is running
+  bool firstSolve() const;
+
+  /**
+   * Convert from a MooseEnum for a trigger metric to an OpenMC enum
+   * @param[in] trigger trigger metric
+   * @return OpenMC enum
+   */
+  openmc::TriggerMetric triggerMetric(tally::TallyTriggerTypeEnum trigger) const;
+
+  /**
+   * Convert from a MooseEnum for tally estimator to an OpenMC enum
+   * @param[in] estimator MOOSE estimator enum
+   * @return OpenMC enum
+   */
+  openmc::TallyEstimator tallyEstimator(tally::TallyEstimatorEnum estimator) const;
 
   /**
    * Check whether the user has already created a variable using one of the protected
@@ -86,6 +120,28 @@ public:
   typedef std::pair<int32_t, int32_t> cellInfo;
 
   /**
+   * Whether a cell is filled with VOID (vacuum)
+   * @param[in] cell_info cell ID, instance
+   * @return whether cell is void
+   */
+  bool cellIsVoid(const cellInfo & cell_info) const;
+
+  /**
+   * Get the cell instance filter corresponding to provided cells
+   * @param[in] tally_cells cells to add to the filter
+   * @return cell instance filter
+   */
+  openmc::Filter * cellInstanceFilter(const std::vector<cellInfo> & tally_cells) const;
+
+  /**
+   * Get the material name given its index. If the material does not have a name,
+   * return the ID.
+   * @param[in] index
+   * @return material name
+   */
+  std::string materialName(const int32_t index) const;
+
+  /**
    * Compute relative error
    * @param[in] sum sum of scores
    * @param[in] sum_sq sum of scores squared
@@ -114,7 +170,7 @@ public:
   int32_t cellID(const int32_t index) const;
 
   /**
-   * Get the material ID from the material index
+   * Get the material ID from the material index; for VOID cells, this returns -1
    * @param[in] index material index
    * @return cell material ID
    */
@@ -196,9 +252,18 @@ public:
    * Get the fill of an OpenMC cell
    * @param[in] cell_info cell ID, instance
    * @param[out] fill_type fill type of the cell, one of MATERIAL, UNIVERSE, or LATTICE
-   * @return indices of material fills
+   * @return indices of what is filling the cell
    */
   virtual std::vector<int32_t> cellFill(const cellInfo & cell_info, int & fill_type) const;
+
+  /**
+   * Whether the cell has a material fill (if so, then get the material index). Void counts
+   * as a material, with a material index of -1.
+   * @param[in] cell_info cell ID, instance
+   * @param[out] material_index material index in the cell
+   * @return whether the cell is filled by a material
+   */
+  bool materialFill(const cellInfo & cell_info, int32_t & material_index) const;
 
   /**
    * Whether a cell contains any fissile materials; for now, this simply returns true for
@@ -210,6 +275,16 @@ public:
   virtual bool cellHasFissileMaterials(const cellInfo & cell_info) const;
 
 protected:
+  /**
+   * Add tally
+   * @param[in] score score type
+   * @param[in] filters tally filters
+   * @param[in] estimator estimator
+   * @return tally, which has been added to OpenMC, but may want to still be queried from Cardinal
+   */
+  openmc::Tally * addTally(const std::vector<std::string> & score,
+    std::vector<openmc::Filter *> & filters, const openmc::TallyEstimator & estimator);
+
   /**
    * Set an auxiliary elemental variable to a specified value
    * @param[in] var_num variable number
@@ -274,6 +349,12 @@ protected:
    * total number of cells.
    */
   const int _n_cell_digits;
+
+  /// OpenMC run mode
+  const openmc::RunMode _run_mode;
+
+  /// Total number of particles simulated
+  unsigned int _total_n_particles;
 
   /// Mapping from local element indices to global element indices for this rank
   std::vector<unsigned int> _local_to_global_elem;

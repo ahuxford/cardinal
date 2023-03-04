@@ -18,17 +18,31 @@
 
 #pragma once
 
-#include "OpenMCPostprocessor.h"
+#include "AuxKernel.h"
+#include "MooseEnum.h"
+#include "MoabSkinner.h"
 
 /**
- * Dummy object just for the sake of having an object for required_objects
+ * Auxkernel to display the mapping of [Mesh] elements to the spatial
+ * bins created by a mesh skinner which skins by subdomain, temperature,
+ * and density.
  */
-class DagMCPostprocessor : public OpenMCPostprocessor
+class SkinnedBins : public AuxKernel
 {
 public:
+  SkinnedBins(const InputParameters & parameters);
+
   static InputParameters validParams();
 
-  DagMCPostprocessor(const InputParameters & parameters);
+protected:
+  virtual Real computeValue();
 
-  virtual Real getValue() override;
+  /// Skinner object to be queried
+  const MoabSkinner * _skinner;
+
+  /**
+   * What skinning bins to display; this allows you to select just a single
+   * "dimension" of the skinning to explore more thoroughly.
+   */
+  const MooseEnum _skin_by;
 };

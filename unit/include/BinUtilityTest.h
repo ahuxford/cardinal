@@ -16,30 +16,13 @@
 /*                 See LICENSE for full restrictions                */
 /********************************************************************/
 
-#ifdef ENABLE_DAGMC
+#pragma once
 
-#include "DagMCPostprocessor.h"
+#include "BinUtility.h"
+#include "MooseObjectUnitTest.h"
 
-registerMooseObject("CardinalApp", DagMCPostprocessor);
-
-InputParameters
-DagMCPostprocessor::validParams()
+class BinUtilityTest : public MooseObjectUnitTest
 {
-  InputParameters params = OpenMCPostprocessor::validParams();
-  return params;
-}
-
-DagMCPostprocessor::DagMCPostprocessor(const InputParameters & parameters)
-  : OpenMCPostprocessor(parameters)
-{
-  mooseError("This class solely exists to have an object for checking whether "
-    "to run DagMC related tests");
-}
-
-Real
-DagMCPostprocessor::getValue()
-{
-  return 0.0;
-}
-
-#endif
+public:
+  BinUtilityTest() : MooseObjectUnitTest("CardinalUnitApp") {}
+};
